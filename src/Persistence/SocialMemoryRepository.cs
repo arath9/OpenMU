@@ -3,12 +3,13 @@
 // </copyright>
 
 namespace MUnique.OpenMU.Persistence.EntityFramework
-{
-    using System;
-    using System.Collections.Generic;
-    using System.Linq;
-    using Microsoft.EntityFrameworkCore;
-    using Microsoft.Extensions.Logging;
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using MUnique.OpenMU.Persistence.Contracts;
 
     /// <summary>
     /// Repository para persistencia de memoria social entre bots y jugadores.
@@ -17,7 +18,7 @@ namespace MUnique.OpenMU.Persistence.EntityFramework
     /// </summary>
     public class SocialMemoryRepository : ISocialMemoryRepository
     {
-        private readonly OpenMUContext _context;
+        private readonly EntityDataContext _context;
         private readonly ILogger<SocialMemoryRepository> _logger;
 
         // Tablas de memoria social (nuevas para Fase 1)
@@ -30,13 +31,12 @@ namespace MUnique.OpenMU.Persistence.EntityFramework
         /// </summary>
         /// <param name="context">Contexto EF Core principal.</param>
         /// <param name="logger">Logger para logging del repository.</param>
-        public SocialMemoryRepository(OpenMUContext context, ILogger<SocialMemoryRepository> logger)
+        public SocialMemoryRepository(EntityDataContext context, ILogger<SocialMemoryRepository>? logger = null)
         {
             this._context = context ?? throw new ArgumentNullException(nameof(context));
             this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
             // Crear tablas si no existen (migración automática para desarrollo)
-            this._context.Database.EnsureCreated();
 
             this._logger.LogInformation("SocialMemoryRepository inicializado");
         }

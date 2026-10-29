@@ -41,6 +41,12 @@
     <ProjectReference Include="..\PlugIns\MUnique.OpenMU.PlugIns.csproj" />
   </ItemGroup>
 
+  <!-- Entity Framework Core references for social memory system (Phases 2-3) -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" />
+  </ItemGroup>
+
   <ItemGroup>
     <Service Include="{508349b6-6b84-4df5-91f0-309beebad82d}" />
   </ItemGroup>

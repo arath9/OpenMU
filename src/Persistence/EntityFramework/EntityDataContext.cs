@@ -86,6 +86,24 @@ public class EntityDataContext : ExtendedTypeContext
     internal DbSet<GuildChatBinding> GuildChatBindings => this.Set<GuildChatBinding>();
 
     /// <summary>
+    /// Gets social interactions between bots and NPCs/players.
+    /// Phase 2-3: Social memory system for personalized bot conversations.
+    /// </summary>
+    internal DbSet<BotSocialInteraction> BotSocialInteractions => this.Set<BotSocialInteraction>();
+
+    /// <summary>
+    /// Gets reputation records between bots and other characters.
+    /// Phase 2-3: Reputation tracking for social relationships.
+    /// </summary>
+    internal DbSet<BotReputationRecord> BotReputationRecords => this.Set<BotReputationRecord>();
+
+    /// <summary>
+    /// Gets event logs for dynamic events (duels, betrayals, rescues).
+    /// Phase 3: Event system for memorable characters and emergent stories.
+    /// </summary>
+    internal DbSet<BotEventLog> BotEventLogs => this.Set<BotEventLog>();
+
+    /// <summary>
     /// Gets the gens memberships of the characters.
     /// </summary>
     internal DbSet<GensMember> GensMembers => this.Set<GensMember>();
@@ -144,6 +162,12 @@ public class EntityDataContext : ExtendedTypeContext
         modelBuilder.Entity<CashShopCoinGrant>().Apply();
         modelBuilder.Entity<AccountExternalLink>().Apply();
         modelBuilder.Entity<GuildChatBinding>().Apply();
+
+        // Social memory system (Phases 2-3)
+        modelBuilder.Entity<Model.BotSocialInteraction>().Apply();
+        modelBuilder.Entity<Model.BotReputationRecord>().Apply();
+        modelBuilder.Entity<Model.BotEventLog>().Apply();
+
         modelBuilder.Entity<DropItemGroup>().Apply();
         modelBuilder.Entity<ExitGate>().Apply();
         modelBuilder.Entity<GameConfiguration>().Apply();
