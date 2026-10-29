@@ -35,6 +35,17 @@ here because they are easy to miss:
 
 ## Orientation
 
+## Local AI bots roadmap (Hermes)
+
+For the private server's AI bot work, read
+[`docs/ai-bots-roadmap.md`](docs/ai-bots-roadmap.md). It defines the priorities,
+phases, protagonists and technical constraints. Start with Phase 0 only and
+record the audit in `docs/ai-bots-architecture.md` before major implementation
+changes. The roadmap's current-state statements must be verified against the
+code during that audit.
+
+### Repository documentation
+
 | Topic | Where |
 |---|---|
 | Build and debug from source | [Run from source](docs-website/docs/getting-started/from-source.md) |

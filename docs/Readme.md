@@ -26,6 +26,9 @@ can be searched and navigated.
 
 ## Contents of this folder
 
+* [AI bots roadmap for Hermes](ai-bots-roadmap.md): private server priorities,
+  development phases and the initial architecture audit task
+
 * [Packets](Packets/Readme.md): the structures of the messages which are
   exchanged between client and server, generated from the XML sources at
   [src/Network/Packets](../src/Network/Packets)
