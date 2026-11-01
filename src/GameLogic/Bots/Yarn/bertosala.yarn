@@ -1,0 +1,13 @@
+title: START
+---
+<<declare $playerName = "aventurero">>
+BertoSala: Una buena oferta empieza por una pregunta, {$playerName}.
+-> Pedir una manzana
+    <<GiveItem "Apple" 1>>
+-> Iniciar una mision
+    <<StartQuest "1:0">>
+-> Conocer el mercado
+    <<ShowLore mercado>>
+-> Salir
+    Vuelve cuando quieras negociar.
+===

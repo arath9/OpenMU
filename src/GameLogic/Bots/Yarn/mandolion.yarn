@@ -1,0 +1,12 @@
+// Dialogue is narrative only: no combat/stat effects are implied.
+title: START
+---
+<<declare $playerName = "aventurero">>
+Mandolion: Soy el guardian de Lorencia. Habla claro, {$playerName}.
+-> Dime un secreto
+    <<ShowLore lorencia>>
+-> Prepararme para la batalla
+    No regalo poderes. Revisa tu equipo y respeta las zonas seguras.
+-> Salir
+    Hasta la proxima.
+===

@@ -1,0 +1,11 @@
+title: START
+---
+<<declare $playerName = "aventurero">>
+BichiCome: Habla, {$playerName}. Estoy cuidando a los mios.
+-> Historia de Lorencia
+    <<ShowLore lorencia>>
+-> Hablar de Ale
+    Si tienes Ale, puedes ofrecerla con: elBichiCome ale.
+-> Salir
+    Buen camino. No provoques a los debiles.
+===

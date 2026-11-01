@@ -1,0 +1,11 @@
+title: START
+---
+<<declare $playerName = "aventurero">>
+Leila Masa: Confia en mi, {$playerName}... pero lee la letra chica.
+-> Dime un secreto
+    <<ShowLore leila>>
+-> Necesito ayuda
+    Los buffs no son gratis. Para pagar una demanda usa: LeilaMasa pagar.
+-> Salir
+    Nos veremos en el proximo spot.
+===
