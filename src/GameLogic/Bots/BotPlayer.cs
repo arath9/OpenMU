@@ -12,7 +12,7 @@ using MUnique.OpenMU.GameLogic.Offline;
 /// healing, pickup) and adds a <see cref="BotNavigator"/> which makes it roam to level-appropriate
 /// hunting grounds instead of standing on a fixed spawn position.
 /// </summary>
-public sealed class BotPlayer : OfflinePlayer
+public class BotPlayer : OfflinePlayer
 {
     /// <summary>
     /// After this many AI ticks failing in a row, the bot is considered broken and gets restarted.

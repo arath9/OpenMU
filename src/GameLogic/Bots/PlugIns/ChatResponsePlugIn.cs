@@ -6,11 +6,18 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
 {
     using System;
     using System.Collections.Generic;
+    using System.ComponentModel;
     using System.Linq;
+    using System.Net.Http;
+    using System.Net.Http.Json;
     using System.Text.Json;
     using Microsoft.Extensions.Logging;
+    using MUnique.OpenMU.PlugIns;
     using MUnique.OpenMU.DataModel.Configuration.Items;
     using MUnique.OpenMU.GameLogic.Offline;
+    using MUnique.OpenMU.GameLogic.PlugIns;
+    using MUnique.OpenMU.GameLogic.Views;
+    using MUnique.OpenMU.Persistence.Contracts;
 
     /// <summary>
     /// PlugIn para generar respuestas de chat contextual con personalidad definida.
@@ -21,7 +28,13 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
     /// - Chat conversacional vía LLM local (Ollama + Qwen2.5-Coder-7B-Instruct) → naturalidad
     /// - Fallback seguro: si LLM falla, bots siguen funcionando sin chat pero farmean normal
     /// </summary>
-    internal sealed class ChatResponsePlugIn : BotFeaturePlugIn
+    /// <summary>
+    /// PlugIn para generar respuestas de chat contextual con personalidad definida.
+    /// Fase 2: Sistema de conversación y memoria.
+    /// </summary>
+    [PlugIn]
+    [System.Runtime.InteropServices.Guid("bf5f3a16-0a09-5c87-95cc-494140772d26")]
+    internal sealed class ChatResponsePlugIn : BotFeaturePlugIn, IChatMessageReceivedPlugIn, IChatMessageSentPlugIn
     {
         // Personalidades definidas para NPCs memorables (Fase 3)
         private static readonly Dictionary<string, PersonalityProfile> KnownPersonalities = new()
@@ -72,12 +85,12 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         private const int MinChatCooldownSeconds = 30; // Mínimo 30 segundos entre mensajes del mismo NPC
 
         private readonly ILogger<ChatResponsePlugIn> _logger;
-        private readonly SocialMemoryRepository _socialMemory;
+        private readonly ISocialMemoryRepository _socialMemory;
 
         /// <summary>
         /// Inicializa el plugin con logger y repository de memoria social.
         /// </summary>
-        public ChatResponsePlugIn(ILogger<ChatResponsePlugIn> logger, SocialMemoryRepository socialMemory)
+        public ChatResponsePlugIn(ILogger<ChatResponsePlugIn> logger, ISocialMemoryRepository socialMemory)
         {
             this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
             this._socialMemory = socialMemory ?? throw new ArgumentNullException(nameof(socialMemory));
@@ -134,7 +147,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
 
                             // Registrar interacción en memoria social
                             this._socialMemory.LogBotInteraction(botName, targetName, 
-                                SocialMemoryRepository.InteractionType.Chat);
+                                ISocialMemoryRepository.InteractionType.Chat);
 
                             return validatedResponse;
                         }
@@ -210,25 +223,25 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
             // Construir prompt completo para LLM
             var promptTemplate = @"Eres un bot de MU Online Season 6 con la siguiente personalidad:
 
-{Personality}
+{0}
 
 Reglas del sistema:
-- {Rules}
+- {1}
 
 Contexto de la interacción:
-{Context}
+{2}
 
-El jugador/NPC dice: ""{UserInput}""
+El jugador/NPC dice: ""{3}""
 
 Genera UNA respuesta corta y natural en español (máximo 2 frases), manteniendo la personalidad definida. NO incluyas explicaciones ni metadatos, solo la respuesta del bot.";
 
             var rules = "Nunca prometas cosas que no puedes cumplir; Si el usuario es hostil, responde con cautela; Mantén la inmersión en MU Online";
             
             return string.Format(promptTemplate,
-                Personality: FormatPersonalityText(personality),
-                Rules: rules,
-                Context: contextText,
-                UserInput: userInput);
+                FormatPersonalityText(personality),
+                rules,
+                contextText,
+                userInput);
         }
 
         /// <summary>
@@ -240,7 +253,7 @@ Genera UNA respuesta corta y natural en español (máximo 2 frases), manteniendo
 
             var traitsText = string.Join(", ", personality.Traits);
             var catchphraseSample = personality.Catchphrases.Length > 0 
-                ? $" Ejemplo: ""{personality.Catchphrases[0]}""" 
+                ? $" Ejemplo: \"{personality.Catchphrases[0]}\""
                 : "";
 
             return $@"**Nombre:** {personality.Name}  
@@ -266,7 +279,7 @@ Genera UNA respuesta corta y natural en español (máximo 2 frases), manteniendo
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             };
 
-            var payload = new Dictionary<string, string>
+            var payload = new Dictionary<string, object>
             {
                 ["model"] = modelName,
                 ["prompt"] = prompt,
@@ -328,7 +341,7 @@ Genera UNA respuesta corta y natural en español (máximo 2 frases), manteniendo
                 
                 // Registrar evento de traición en memoria social
                 this._socialMemory.LogEvent(personality.Name, 
-                    SocialMemoryRepository.EventType.Betrayal, 
+                    ISocialMemoryRepository.EventType.Betrayal, 
                     $"Traición con probabilidad {personality.BetrayalProbability * 100}%");
 
                 return $"¡{personality.Catchphrases[0]}"; // Respuesta de "traición"
@@ -348,7 +361,7 @@ Genera UNA respuesta corta y natural en español (máximo 2 frases), manteniendo
                         this._logger.LogInformation("Bot {BotName} activando FURIA", personality.Name);
                         
                         this._socialMemory.LogEvent(personality.Name, 
-                            SocialMemoryRepository.EventType.Duel, 
+                            ISocialMemoryRepository.EventType.Duel, 
                             $"Furia activada por condición: {condition}");
 
                         break;
@@ -449,6 +462,42 @@ Genera UNA respuesta corta y natural en español (máximo 2 frases), manteniendo
 
             // Opcional: condiciones para activar furia (El Bichi Come)
             public string[] RageTriggerConditions { get; set; } = Array.Empty<string>();
+        }
+
+        /// <summary>
+        /// Implementación de IChatMessageReceivedPlugIn - intercepta mensajes de chat entrantes.
+        /// Permite a los bots responder contextualmente cuando reciben un mensaje.
+        /// </summary>
+        void IChatMessageReceivedPlugIn.ChatMessageReceived(Player sender, string message, CancelEventArgs cancelEventArgs)
+        {
+            // En implementación real: verificar si algún bot debería responder a este mensaje
+            this._logger.LogDebug("Mensaje de chat recibido: '{Message}' desde {Sender}", 
+                TruncateString(message, 100), sender?.Name);
+            
+            // Verificar cooldown global para evitar spam
+            var cacheKey = $"chat_received_{sender?.Name ?? "unknown"}";
+            if (LastChatTimestamp.TryGetValue(cacheKey, out var lastTime) && 
+                DateTime.UtcNow - lastTime < TimeSpan.FromSeconds(MinChatCooldownSeconds))
+            {
+                this._logger.LogDebug("Bot en cooldown global para responder a mensajes de {Sender}", sender?.Name);
+                return;
+            }
+
+            // En implementación real: verificar si hay bots que deberían responder
+            // Por ahora solo loguear el evento
+        }
+
+        /// <summary>
+        /// Implementación de IChatMessageSentPlugIn - notifica cuando se envía un mensaje.
+        /// Permite a los bots reaccionar al contenido del mensaje enviado.
+        /// </summary>
+        async ValueTask IChatMessageSentPlugIn.ChatMessageSentAsync(Player sender, string message, ChatMessageType messageType, Player? receiver)
+        {
+            // En implementación real: verificar si algún bot debería responder contextualmente
+            this._logger.LogDebug("Mensaje de chat enviado: '{Message}' tipo {Type} a {Receiver}", 
+                TruncateString(message, 100), messageType, receiver?.Name);
+            
+            await Task.CompletedTask.ConfigureAwait(false);
         }
     }
 }

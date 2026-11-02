@@ -582,6 +582,47 @@ internal sealed class BotNavigator : AsyncDisposable
         base.Dispose(disposing);
     }
 
+    private async ValueTask NavigateProtagonistAsync(BotProtagonist protagonist, CancellationToken token)
+    {
+        if (!protagonist.Settings.Enabled || protagonist.IsDisposed || !protagonist.IsAlive
+            || protagonist.PlayerState.CurrentState != PlayerState.EnteredWorld || protagonist.CurrentMiniGame is not null
+            || protagonist.CurrentMap is not { } map || protagonist.IsWalking)
+        {
+            return;
+        }
+
+        var destination = protagonist.Destination;
+        if (!protagonist.Settings.AllowedMaps.Contains(destination.Map))
+        {
+            return;
+        }
+
+        await BotPartyHandler.ProcessAsync(protagonist).ConfigureAwait(false);
+        if (map.Definition.Number != destination.Map)
+        {
+            if (DateTime.UtcNow - this._lastWarpUtc < WarpCooldown)
+            {
+                return;
+            }
+
+            var warp = protagonist.GameContext.Configuration.WarpList.FirstOrDefault(w => w.Gate?.Map?.Number == destination.Map);
+            if (warp is not null)
+            {
+                this._lastWarpUtc = DateTime.UtcNow;
+                await WarpAction.WarpToAsync(protagonist, warp).ConfigureAwait(false);
+                await protagonist.ClientReadyAfterMapChangeAsync().ConfigureAwait(false);
+            }
+
+            return;
+        }
+
+        var point = new Point(destination.X, destination.Y);
+        if (point.EuclideanDistanceTo(protagonist.Position) > 2 && (protagonist.ScriptedTarget is null || point.EuclideanDistanceTo(protagonist.Position) > 3))
+        {
+            await this.TravelTowardAsync(map, point, token).ConfigureAwait(false);
+        }
+    }
+
     private static PathFinder CreateTravelPathFinder()
     {
         return new PathFinder(new FullGridNetwork(true))
@@ -708,6 +749,18 @@ internal sealed class BotNavigator : AsyncDisposable
         if (this._player.CurrentMiniGame is not null)
         {
             await this.EvaluateInsideMiniGameAsync(map, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (this._player is BotProtagonist protagonist)
+        {
+            // Script decisions run in the helper tick. Navigation runs in that same serialization
+            // boundary rather than racing equipment, combat or persistence on this timer.
+            this._player.PendingBotActions.Enqueue(async () =>
+            {
+                await this.EnsurePotionsAsync().ConfigureAwait(false);
+                await this.NavigateProtagonistAsync(protagonist, cancellationToken).ConfigureAwait(false);
+            });
             return;
         }
 

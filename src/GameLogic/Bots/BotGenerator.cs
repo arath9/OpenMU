@@ -450,7 +450,7 @@ internal sealed class BotGenerator
                 break;
             }
 
-            loginNames.AddRange(page.Where(account => account.IsBot).Select(account => account.LoginName));
+            loginNames.AddRange(page.Where(account => account.IsBot && !ProtagonistGenerator.IsProtagonistAccount(account.LoginName)).Select(account => account.LoginName));
             skip += page.Count;
         }
 

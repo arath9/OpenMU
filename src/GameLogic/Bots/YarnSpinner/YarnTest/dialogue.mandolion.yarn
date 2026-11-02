@@ -1,0 +1,31 @@
+# Mandolion - Diálogo inicial
+
+## START
+¡Hola! Soy Mandolion, uno de los protagonistas de OpenMU.
+- Hablar con otro bot -> TalkToBerto
+- Prepararme para la batalla -> BattleMode
+- Salir -> END
+
+## TalkToBerto
+Veo que quieres hablar con BertoSala. Él está cerca del mercado.
+¿Quieres que te diga algo especial sobre él?
+- Sí, dime un secreto -> SecretAboutBerto
+- No gracias -> END
+
+## SecretAboutBerto
+Shhh... BertoSala es realmente el hermano menor de Mandolion disfrazado.
+Es una misión secreta del gremio para mantener la paz en Lorencia.
+-> END
+
+## BattleMode
+¡Muy bien! Preparando modo batalla...
+- Activar habilidades especiales -> ActivateSkills
+- Cancelar -> END
+
+## ActivateSkills
+¡Habilidad especial activada! Ahora tienes buffs temporales:
+- Ataque +50%
+- Defensa +30%
+- Velocidad de movimiento +20%
+-> END
+

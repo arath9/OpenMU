@@ -8,20 +8,34 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
     using System.Collections.Generic;
     using System.Linq;
     using Microsoft.Extensions.Logging;
-    using MUnique.OpenMU.DataModel.Configuration.Map;
-    using MUnique.OpenMU.Persistence.EntityFramework;
+    using MUnique.OpenMU.PlugIns;
+    using MUnique.OpenMU.Persistence.Contracts;
+    using EventType = MUnique.OpenMU.Persistence.Contracts.ISocialMemoryRepository.EventType;
 
     /// <summary>
     /// Director de eventos dinámicos para bots y NPCs memorables.
     /// Fase 3: Cuatro protagonistas (elmandolion, bertoSalamin, LeilaMasa, elBichiCome).
     /// 
     /// Eventos programados:
-    - Cacerías en grupo (HuntingParty)
-    - Duelos entre bots/NPCs (Duel)  
-    - Traiciones de LeilaMasa (Betrayal)
-    - Rescates de aliados (Rescue)
-    - Regalos ceremoniales (GiftGiving)
+    /// - Cacerías en grupo (HuntingParty)
+    /// - Duelos entre bots/NPCs (Duel)
+    /// - Traiciones de LeilaMasa (Betrayal)
+    /// - Rescates de aliados (Rescue)
+    /// - Regalos ceremoniales (GiftGiving)
     /// </summary>
+    /// <summary>
+    /// Director de eventos dinámicos para bots y NPCs memorables.
+    /// Fase 3: Cuatro protagonistas (elmandolion, bertoSalamin, LeilaMasa, elBichiCome).
+    /// 
+    /// Eventos programados:
+    /// - Cacerías en grupo (HuntingParty)
+    /// - Duelos entre bots/NPCs (Duel)
+    /// - Traiciones de LeilaMasa (Betrayal)
+    /// - Rescates de aliados (Rescue)
+    /// - Regalos ceremoniales (GiftGiving)
+    /// </summary>
+    [PlugIn]
+    [System.Runtime.InteropServices.Guid("940031c4-129b-5b4e-afd4-a0b806d78721")]
     internal sealed class EventDirector : BotFeaturePlugIn, IDisposable
     {
         // Configuración de eventos dinámicos
@@ -33,28 +47,28 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         {
             ["morning"] = new List<ScheduledEvent> 
             { 
-                new ScheduledEvent { EventType = "HuntingParty", Probability = 0.3f },
-                new ScheduledEvent { EventType = "GiftGiving", Probability = 0.1f }
+                new ScheduledEvent { EventType = EventType.HuntingParty, Probability = 0.3f },
+                new ScheduledEvent { EventType = EventType.GiftGiving, Probability = 0.1f }
             },
             ["afternoon"] = new List<ScheduledEvent> 
             { 
-                new ScheduledEvent { EventType = "Duel", Probability = 0.2f },
-                new ScheduledEvent { EventType = "HuntingParty", Probability = 0.4f }
+                new ScheduledEvent { EventType = EventType.Duel, Probability = 0.2f },
+                new ScheduledEvent { EventType = EventType.HuntingParty, Probability = 0.4f }
             },
             ["evening"] = new List<ScheduledEvent> 
             { 
-                new ScheduledEvent { EventType = "Betrayal", Probability = 0.15f }, // LeilaMasa más activa de noche
-                new ScheduledEvent { EventType = "Duel", Probability = 0.25f }
+                new ScheduledEvent { EventType = EventType.Betrayal, Probability = 0.15f }, // LeilaMasa más activa de noche
+                new ScheduledEvent { EventType = EventType.Duel, Probability = 0.25f }
             },
             ["night"] = new List<ScheduledEvent> 
             { 
-                new ScheduledEvent { EventType = "Betrayal", Probability = 0.3f }, // Traiciones nocturnas
-                new ScheduledEvent { EventType = "Rescue", Probability = 0.2f }
+                new ScheduledEvent { EventType = EventType.Betrayal, Probability = 0.3f }, // Traiciones nocturnas
+                new ScheduledEvent { EventType = EventType.Rescue, Probability = 0.2f }
             }
         };
 
         private readonly ILogger<EventDirector> _logger;
-        private readonly SocialMemoryRepository _socialMemory;
+        private readonly ISocialMemoryRepository _socialMemory;
         private readonly Dictionary<string, DateTime> LastEventByType = new();
 
         // Eventos programados actualmente activos
@@ -63,13 +77,16 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         /// <summary>
         /// Inicializa el director de eventos con logger y repository.
         /// </summary>
-        public EventDirector(ILogger<EventDirector> logger, SocialMemoryRepository socialMemory)
+        public EventDirector(ILogger<EventDirector> logger, ISocialMemoryRepository socialMemory)
         {
             this._logger = logger ?? throw new ArgumentNullException(nameof(logger));
             this._socialMemory = socialMemory ?? throw new ArgumentNullException(nameof(socialMemory));
 
-            // Iniciar scheduler de eventos dinámicos
-            StartEventScheduler();
+            // Iniciar scheduler de eventos dinámicos en background (fire and forget)
+            _ = StartEventSchedulerAsync(); // Ignorar resultado, ejecuta en background
+
+            // Programar eventos iniciales para bots activos (simulado)
+            ScheduleInitialEvents();
         }
 
         /// <summary>
@@ -242,7 +259,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
                 this._socialMemory.UpdateReputation(botName, victim, reputationDelta: -50);
 
                 // Registrar evento de traición
-                this._socialMemory.LogEvent(botName, SocialMemoryRepository.EventType.Betrayal, 
+                this._socialMemory.LogEvent(botName, ISocialMemoryRepository.EventType.Betrayal, 
                     $"Traicionando a {victim} con contexto: {context}");
             }
         }
@@ -266,7 +283,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
                 this._socialMemory.UpdateReputation(botName, ally, reputationDelta: +20);
 
                 // Registrar evento de rescate
-                this._socialMemory.LogEvent(botName, SocialMemoryRepository.EventType.Rescue, 
+                this._socialMemory.LogEvent(botName, ISocialMemoryRepository.EventType.Rescue, 
                     $"Rescatando a {ally} con contexto: {context}");
             }
         }
@@ -294,7 +311,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
                 this._socialMemory.UpdateReputation(botName, recipient, reputationDelta: +10);
 
                 // Registrar evento de regalo
-                this._socialMemory.LogEvent(botName, SocialMemoryRepository.EventType.GiftGiving, 
+                this._socialMemory.LogEvent(botName, ISocialMemoryRepository.EventType.GiftGiving, 
                     $"Regalando {giftItem} a {recipient} con contexto: {context}");
             }
         }
@@ -303,28 +320,64 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         /// Inicia el scheduler de eventos dinámicos en background.
         /// Ejecuta cada 5 minutos para verificar y ejecutar eventos programados.
         /// </summary>
-        private void StartEventScheduler()
+        private async Task StartEventSchedulerAsync()
         {
-            _ = Task.Run(async () =>
-            {
-                while (true)
-                {
-                    try
-                    {
-                        // Esperar 5 minutos antes de la siguiente ejecución
-                        await Task.Delay(TimeSpan.FromMinutes(5)).ConfigureAwait(false);
-
-                        // Ejecutar eventos programados
-                        this.ExecuteScheduledEvents();
-                    }
-                    catch (Exception ex)
-                    {
-                        this._logger.LogError(ex, "Error en el scheduler de eventos dinámicos");
-                    }
-                }
-            });
-
+            // Log de inicio del scheduler
             this._logger.LogInformation("Scheduler de eventos dinámicos iniciado - ejecutando cada 5 minutos");
+
+            while (true)
+            {
+                try
+                {
+                    // Esperar 5 minutos antes de la siguiente ejecución
+                    await Task.Delay(TimeSpan.FromMinutes(5)).ConfigureAwait(false);
+
+                    // Ejecutar eventos programados
+                    this.ExecuteScheduledEvents();
+                }
+                catch (Exception ex)
+                {
+                    this._logger.LogError(ex, "Error en el scheduler de eventos dinámicos");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Programa eventos iniciales para bots activos al iniciar el servidor.
+        /// </summary>
+        private void ScheduleInitialEvents()
+        {
+            this._logger.LogInformation("Programando eventos iniciales para bots activos");
+
+            // En implementación real: consultar lista de bots activos desde GameServer
+            // Por ahora simular bots conocidos
+            var activeBots = new[] { "bot0001", "bot0002", "bot0003" }; // Nombres reales de los bots del servidor
+
+            foreach (var botName in activeBots)
+            {
+                try
+                {
+                    // Programar eventos aleatorios para cada bot
+                    var randomEventType = Random.Shared.Next(5);
+                    EventType eventType = randomEventType switch
+                    {
+                        0 => EventType.HuntingParty,
+                        1 => EventType.Duel,
+                        2 => EventType.Betrayal,
+                        3 => EventType.Rescue,
+                        4 => EventType.GiftGiving,
+                        _ => EventType.HuntingParty
+                    };
+
+                    this.ScheduleEventForBot(botName, eventType, "Evento inicial programado al inicio del servidor");
+                }
+                catch (Exception ex)
+                {
+                    this._logger.LogError(ex, "Error programando evento inicial para Bot {BotName}", botName);
+                }
+            }
+
+            this._logger.LogInformation("Eventos iniciales programados: {Count} bots procesados", activeBots.Length);
         }
 
         /// <summary>
@@ -368,7 +421,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         /// <summary>
         /// Obtiene aliado más cercano (reputación más alta).
         /// </summary>
-        private string GetClosestAlly(string botName)
+        private string? GetClosestAlly(string botName)
         {
             // En implementación real: consultar lista de aliados con reputación positiva
             // Por ahora return nombre simulado
@@ -383,7 +436,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         /// Obtiene aliado en peligro.
         /// Regla: Monitores simulados de health bajo o monsters cercanos.
         /// </summary>
-        private string GetAllyInDanger(string botName)
+        private string? GetAllyInDanger(string botName)
         {
             // En implementación real: consultar estado actual de aliados (health, posición)
             // Por ahora return nombre simulado
@@ -397,7 +450,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
         /// <summary>
         /// Obtiene aliado random para regalo ceremonial.
         /// </summary>
-        private string GetRandomAlly(string botName)
+        private string? GetRandomAlly(string botName)
         {
             // En implementación real: consultar lista de aliados con reputación positiva
             // Por ahora return nombre simulado
@@ -425,6 +478,7 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
             public Guid ID { get; set; }
             public string BotName { get; set; } = "";
             public EventType EventType { get; set; }
+            public float Probability { get; set; }
             public string Context { get; set; } = "";
             public DateTime ScheduledTime { get; set; }
             public EventStatus Status { get; set; } = EventStatus.Pending;
@@ -444,16 +498,6 @@ namespace MUnique.OpenMU.GameLogic.Bots.PlugIns
             this._logger.LogInformation("EventDirector cleanup completado");
         }
 
-        /// <summary>
-        /// Enum para tipos de eventos dinámicos.
-        /// </summary>
-        private enum EventType
-        {
-            HuntingParty = 1,    // Cacería en grupo
-            Duel = 2,           // Duelo entre bots/NPCs
-            Betrayal = 3,       // Traición (LeilaMasa)
-            Rescue = 4,         // Rescate de aliado
-            GiftGiving = 5      // Regalo ceremonial
-        }
+
     }
 }

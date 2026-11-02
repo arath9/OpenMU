@@ -23,6 +23,20 @@ using MUnique.OpenMU.GameLogic.Offline;
 public sealed class BotManager
 {
     private readonly ConcurrentDictionary<string, BotPlayer> _bots = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Func<IGameContext, string, BotPlayer>? _factory;
+
+    /// <summary>Initializes a standard population bot manager.</summary>
+    public BotManager()
+        : this(null)
+    {
+    }
+
+    /// <summary>Initializes a manager with a factory for specialized bots on dedicated accounts.</summary>
+    /// <param name="factory">The optional specialized bot factory.</param>
+    public BotManager(Func<IGameContext, string, BotPlayer>? factory)
+    {
+        this._factory = factory;
+    }
 
     /// <summary>
     /// Gets a snapshot of the currently active bots.
@@ -49,7 +63,7 @@ public sealed class BotManager
             return false;
         }
 
-        var bot = new BotPlayer(gameContext);
+        var bot = this._factory?.Invoke(gameContext, loginName) ?? new BotPlayer(gameContext);
         var added = false;
         string? key = null;
         try

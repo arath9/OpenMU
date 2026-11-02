@@ -39,6 +39,13 @@ public static class BotPvpRules
     /// <returns><c>true</c> if attacking is free of PK consequences; otherwise, <c>false</c>.</returns>
     public static bool IsLegalPvpTarget(Player bot, Player target)
     {
+        if (bot is BotProtagonist protagonist && protagonist.CanAttack(target))
+        {
+            // An explicit opt-in exception for these four accounts only. The normal attack action
+            // still enforces safezones, server PvP settings, damage calculation and PK consequences.
+            return true;
+        }
+
         // A running mini game with free player killing (Chaos Castle): every fellow participant
         // is fair game - such kills never escalate the hero state (see Player.OnDeathAsync), the
         // game's self-defense bookkeeping doesn't even track them. Gated on the running state, so
