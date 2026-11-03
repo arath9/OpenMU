@@ -352,8 +352,8 @@ public class LocalLLMClient : IDisposable
 
     internal static class DialogLogger
     {
-        public static void Info(string m) => System.Console.WriteLine($"[DIALOG INFO] {{m}}");
-        public static void Warn(string m) => System.Console.WriteLine($"[DIALOG WARN] {{m}}");
-        public static void Error(string m) => System.Console.Error.WriteLine($"[DIALOG ERROR] {{m}}");
+        public static void Info(string m) => System.Console.WriteLine($"[DIALOG INFO] {m}");
+        public static void Warn(string m) => System.Console.WriteLine($"[DIALOG WARN] {m}");
+        public static void Error(string m) => System.Console.Error.WriteLine($"[DIALOG ERROR] {m}");
     }
 }
