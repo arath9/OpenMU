@@ -29,6 +29,12 @@ public abstract class BotProtagonist : BotPlayer
     private readonly Dictionary<Player, DateTimeOffset> _lastTalk = new();
     private int _llmBusy;
 
+    // Acción actual (seguir, guiar, pelear). La ejecuta el tick; mientras hay una, ThinkAsync no corre.
+    private NpcActionKind _action;
+    private Player? _actionTarget;
+    private ProtagonistWaypoint? _actionPlace;
+    private DateTimeOffset _actionUntil;
+
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
 
@@ -80,10 +86,14 @@ public abstract class BotProtagonist : BotPlayer
             this._target = null;
         }
 
-        await this.ThinkAsync(now).ConfigureAwait(false);
+        // Si hay una acción en curso, manda la acción; si no, la personalidad.
+        if (!await this.UpdateActionAsync(now).ConfigureAwait(false))
+        {
+            await this.ThinkAsync(now).ConfigureAwait(false);
+        }
 
         // Shared acquisition runs after personalities, including those which clear their target.
-        if (this.Settings.ProtagonistHuntEnabled && this.ScriptedTarget is null)
+        if (this.Settings.ProtagonistHuntEnabled && this.ScriptedTarget is null && this._action == NpcActionKind.None)
         {
             var otherProtagonists = this.World.GetAllBots()
                 .Where(bp => bp != this)
@@ -269,18 +279,25 @@ public abstract class BotProtagonist : BotPlayer
         {
             try
             {
-                var reply = await integration.ReplyAsync(this.Name, playerName, systemPrompt, message).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(reply))
+                var intent = await integration.ReplyIntentAsync(this.Name, playerName, systemPrompt, message).ConfigureAwait(false);
+                if (intent is null)
                 {
                     return;
                 }
 
-                var lines = ChatText.Split(reply);
+                var lines = ChatText.Split(intent.Say);
+                var place = NpcPlaces.Find(intent.Place);
                 this.PendingBotActions.Enqueue(async () =>
                 {
                     foreach (var line in lines)
                     {
                         await this.SayAsync(line, force: true).ConfigureAwait(false);
+                    }
+
+                    // Primero habla, después actúa. StartAction valida todo.
+                    if (intent.Action != NpcActionKind.None)
+                    {
+                        this.StartAction(intent.Action, sender, place);
                     }
                 });
             }
@@ -385,6 +402,132 @@ public abstract class BotProtagonist : BotPlayer
     internal Player? ScriptedTarget
         => this._target is { } t && this.CanAttack(t) ? t : null;
 
+    /// <summary>
+    /// Única puerta de entrada para que el protagonista haga algo. La usa el chat y, en la fase
+    /// siguiente, el cerebro autónomo. Valida todo: si los datos no sirven, no hace nada.
+    /// Corre en el hilo del bot (tick o PendingBotActions).
+    /// </summary>
+    internal void StartAction(NpcActionKind kind, Player? target, ProtagonistWaypoint? place)
+    {
+        var now = DateTimeOffset.UtcNow;
+        switch (kind)
+        {
+            case NpcActionKind.Follow when target is not null:
+                this.StopAction();
+                this._action = kind;
+                this._actionTarget = target;
+                this._actionUntil = now.AddMinutes(5);
+                break;
+
+            case NpcActionKind.Guide when place is not null && this.Settings.AllowedMaps.Contains(place.Map):
+                this.StopAction();
+                this._action = kind;
+                this._actionTarget = target;
+                this._actionPlace = place;
+                this._actionUntil = now.AddMinutes(10);
+                this.Destination = place;
+                break;
+
+            case NpcActionKind.Fight when target is not null:
+                this.StopAction();
+                this._action = kind;
+                this._actionTarget = target;
+                this._actionUntil = now.AddMinutes(1);
+                this.Engage(target, TimeSpan.FromMinutes(1));
+                break;
+
+            case NpcActionKind.Stop:
+                this.StopAction();
+                break;
+
+            default:
+                return; // None, o datos inválidos (lugar inexistente, sin objetivo).
+        }
+
+        this.Logger.LogInformation("Accion {Bot}: {Action} objetivo={Target} lugar={Place}", this.Name, kind, target?.Name, NpcPlaces.NameOf(place));
+    }
+
+    private void StopAction()
+    {
+        if (this._action == NpcActionKind.Fight)
+        {
+            this.Engage(null);
+        }
+
+        this._action = NpcActionKind.None;
+        this._actionTarget = null;
+        this._actionPlace = null;
+    }
+
+    /// <summary>Avanza la acción actual. Devuelve true si hay una acción en curso (y entonces ThinkAsync no corre).</summary>
+    private async ValueTask<bool> UpdateActionAsync(DateTimeOffset now)
+    {
+        if (this._action == NpcActionKind.None)
+        {
+            return false;
+        }
+
+        if (now > this._actionUntil)
+        {
+            this.StopAction();
+            return false;
+        }
+
+        var t = this._actionTarget;
+        var targetGone = t is null || t.IsDisposed || !t.IsAlive
+            || t.PlayerState.CurrentState != MUnique.OpenMU.GameLogic.PlayerState.EnteredWorld;
+
+        switch (this._action)
+        {
+            case NpcActionKind.Follow:
+                if (targetGone || !ReferenceEquals(t!.CurrentMap, this.CurrentMap) || !this.IsInRange(t.Position, 30))
+                {
+                    this.StopAction();
+                    return false;
+                }
+
+                if (this.CurrentMap is { } map)
+                {
+                    this.Destination = new ProtagonistWaypoint(map.Definition.Number, t.Position.X, t.Position.Y);
+                }
+
+                return true;
+
+            case NpcActionKind.Guide:
+                if (this._actionPlace is { } p && this.CurrentMap?.Definition.Number == p.Map
+                    && this.IsInRange(p.X, p.Y, 4))
+                {
+                    var placeName = NpcPlaces.NameOf(p);
+                    this.StopAction();
+                    await this.SayAsync($"Llegamos a {placeName}.", force: true).ConfigureAwait(false);
+                    return false;
+                }
+
+                return true;
+
+            case NpcActionKind.Fight:
+                if (targetGone || this.ScriptedTarget is null)
+                {
+                    this.StopAction();
+                    return false;
+                }
+
+                return true;
+
+            default:
+                this.StopAction();
+                return false;
+        }
+    }
+
+    private string DescribeCurrentAction() => this._action switch
+    {
+        NpcActionKind.Follow => $"siguiendo a {this._actionTarget?.Name}",
+        NpcActionKind.Guide => $"llevando a {this._actionTarget?.Name} a {NpcPlaces.NameOf(this._actionPlace)}",
+        NpcActionKind.Fight => $"peleando con {this._actionTarget?.Name}",
+        _ => "sin hacer nada en particular",
+    };
+
     /// <summary>Construye el system prompt para el LLM con contexto del jugador y el mundo.</summary>
     private string BuildSystemPrompt(Player sender)
     {
@@ -404,16 +547,27 @@ public abstract class BotProtagonist : BotPlayer
             "SITUACIÓN AHORA:\n" +
             $"- Estás en {map}.\n" +
             $"- Te habla {sender.Name}, nivel {sender.Level}, clase {playerClass}.\n\n" +
-            "EL MUNDO (usá solo esto, no inventes lugares):\n" +
-            "Mapas: Lorencia, Noria, Devias, Dungeon, Lost Tower, Atlans, Tarkan, Icarus. " +
-            "Cosas: monstruos, Jewel of Bless, Soul y Chaos, alas, reset, party, guild, PK.\n\n" +
-            "EJEMPLOS DE TU ESTILO:\n" +
+            "ACCIONES (además de hablar podés hacer UNA):\n" +
+            "- none: solo hablar.\n" +
+            "- follow: seguir a quien te habla.\n" +
+            "- guide: llevarlo a un lugar. En place poné lorencia, devias o noria.\n" +
+            "- fight: pelear con quien te habla (si te desafía o te falta el respeto en serio).\n" +
+            "- stop: dejar de hacer lo que estás haciendo.\n" +
+            "Vos decidís según tu personalidad: si no tenés ganas, decí que no y usá none. " +
+            "Si decís que vas a hacer algo, poné esa acción; no prometas y pongas none.\n" +
+            $"AHORA ESTÁS: {this.DescribeCurrentAction()}.\n\n" +
+            "RESPONDÉ SIEMPRE con este JSON y nada más: {{\"say\": \"lo que decís\", \"action\": \"none\", \"place\": \"\"}}\n\n" +
+            "EJEMPLOS:\n" +
             "Jugador: hola\n" +
-            $"{name}: Buenas. ¿Qué andás buscando por mi ciudad?\n" +
-            "Jugador: estoy perdido\n" +
-            $"{name}: Salí por la puerta norte y seguí el camino. Y no te metas al Dungeon con ese nivel.\n" +
+            "{{\"say\": \"Buenas. ¿Qué andás buscando por mi ciudad?\", \"action\": \"none\", \"place\": \"\"}}\n" +
+            "Jugador: me llevás a devias?\n" +
+            "{{\"say\": \"Dale, seguime y no te quedes atrás.\", \"action\": \"guide\", \"place\": \"devias\"}}\n" +
+            "Jugador: acompañame un rato\n" +
+            "{{\"say\": \"Un rato. No me hagas perder el tiempo.\", \"action\": \"follow\", \"place\": \"\"}}\n" +
             "Jugador: sos un manco\n" +
-            $"{name}: Decímelo en la arena y vemos quién es el manco.";
+            "{{\"say\": \"Vení que te enseño quién es el manco.\", \"action\": \"fight\", \"place\": \"\"}}\n" +
+            "Jugador: ya está, quedate acá\n" +
+            "{{\"say\": \"Como quieras. Me vuelvo a lo mío.\", \"action\": \"stop\", \"place\": \"\"}}";
     }
 
     /// <summary>Go north to the gate at (130, 178).</summary>
