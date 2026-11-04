@@ -116,6 +116,31 @@ public abstract class BotProtagonist : BotPlayer
             return;
         }
 
+        // Modo LLM: va ANTES del filtro de alias de Yarn, que solo acepta mensajes que empiezan con el nombre.
+        if (_dialogueConfig.PreferredMode == DialogueMode.LLMNatural)
+        {
+            var lower = message.ToLowerInvariant();
+            var named = lower.Contains(this.Name.ToLowerInvariant()) || lower.Contains(this.DefaultDialogueFile);
+            var nowLlm = DateTimeOffset.UtcNow;
+            var talking = _lastTalk.TryGetValue(sender, out var last) && nowLlm - last < TimeSpan.FromSeconds(60);
+
+            // Lo nombran en cualquier parte de la frase, o ya está charlando con ese jugador.
+            if (!named && !talking)
+            {
+                return;
+            }
+
+            // Anti-spam: 2 segundos por jugador.
+            if (talking && nowLlm - last < TimeSpan.FromSeconds(2))
+            {
+                return;
+            }
+
+            _lastTalk[sender] = nowLlm;
+            await this.ReactToChatAsyncLLM(sender, message.Trim()).ConfigureAwait(false);
+            return;
+        }
+
         var input = message.Trim();
         var addressed = false;
         foreach (var alias in new[] { this.Name, this.Identity, this.DefaultDialogueFile })
@@ -152,32 +177,6 @@ public abstract class BotProtagonist : BotPlayer
         if (now - state.LastInteraction > TimeSpan.FromMinutes(2))
         {
             state.Dialogue = null;
-        }
-
-        // ✅ VERIFICAR PREFERREDMODE ANTES DE YARNSPINNER
-        
-        // Si PreferredMode == LLMNatural, llamar directamente ReactToChatAsyncLLM sin verificar cooldown/integrador nulo
-        if (_dialogueConfig.PreferredMode == DialogueMode.LLMNatural)
-        {
-            var lower = message.ToLowerInvariant();
-            var named = lower.Contains(this.Name.ToLowerInvariant()) || lower.Contains(this.DefaultDialogueFile);
-            var talking = _lastTalk.TryGetValue(sender, out var last) && now - last < TimeSpan.FromSeconds(60);
-
-            // Lo nombran en cualquier parte de la frase, o ya está charlando con ese jugador.
-            if (!named && !talking)
-            {
-                return;
-            }
-
-            // Anti-spam: 2 segundos por jugador.
-            if (talking && now - last < TimeSpan.FromSeconds(2))
-            {
-                return;
-            }
-
-            _lastTalk[sender] = now;
-            await this.ReactToChatAsyncLLM(sender, input).ConfigureAwait(false);
-            return;
         }
 
         // Modo guiado por defecto (YarnSpinner) para PreferredMode == Guided o Hybrid
