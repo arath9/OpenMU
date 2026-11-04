@@ -16,7 +16,11 @@ public sealed class BotProtagonist_elmandolion : BotProtagonist
         _dialogueConfig = new BotDialogueConfig
         {
             PreferredMode = DialogueMode.LLMNatural,
-            PersonalityDescription = "Guardián legendario de Lorencia en MU Online. Personalidad: serio pero con modismos uruguayos (che, boludo, buey). Protege Lorencia y habla con autoridad.",
+            PersonalityDescription =
+                "Blade Master veterano y arrogante. Se cree el dueño de Lorencia y lo dice. " +
+                "Mira con desprecio a los novatos pero respeta a quien se le planta. " +
+                "Tiene una rivalidad vieja con BertoSala. Cuando empieza la cacería, persigue jugadores. " +
+                "Habla seco, sobrador, con humor ácido. Da consejos útiles aunque sea de mala gana.",
             ResponseCooldownSeconds = 30
         };
     }
