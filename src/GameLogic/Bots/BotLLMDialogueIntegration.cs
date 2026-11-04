@@ -104,6 +104,44 @@ namespace MUnique.OpenMU.GameLogic.Bots
             return reply;
         }
 
+        /// <summary>Cómo ReplyAsync, pero devuelve lo que dice Y lo que quiere hacer.</summary>
+        public async Task<NpcIntent?> ReplyIntentAsync(string botName, string playerName, string systemPrompt, string playerMessage)
+        {
+            List<ChatTurn> turns;
+            lock (_lockObj)
+            {
+                var now = DateTime.UtcNow;
+                if (!_history.TryGetValue(playerName, out var h)
+                    || now - _lastSeen.GetValueOrDefault(playerName) > TimeSpan.FromMinutes(5))
+                {
+                    h = new List<ChatTurn>();
+                    _history[playerName] = h;
+                }
+
+                _lastSeen[playerName] = now;
+                turns = new List<ChatTurn>(h) { new("user", playerMessage) };
+            }
+
+            var intent = await _llmClient.ChatIntentAsync(systemPrompt, turns, botName).ConfigureAwait(false);
+            if (intent is null)
+            {
+                return null;
+            }
+
+            lock (_lockObj)
+            {
+                var h = _history[playerName];
+                h.Add(new ChatTurn("user", playerMessage));
+                h.Add(new ChatTurn("assistant", intent.Say));
+                if (h.Count > 16)
+                {
+                    h.RemoveRange(0, h.Count - 16);
+                }
+            }
+
+            return intent;
+        }
+
         /// <summary>
         /// Procesa un mensaje del jugador en modo híbrido.
         /// Primero intenta YarnSpinner, si hay opciones muestra botones, luego permite texto libre.
