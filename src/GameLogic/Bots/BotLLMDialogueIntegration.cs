@@ -54,105 +54,54 @@ namespace MUnique.OpenMU.GameLogic.Bots
     {
         private readonly LocalLLMClient _llmClient;
         private readonly ILogger<BotLLMDialogueIntegration>? _logger;
-        // Cooldown por jugador-bot, no global por bot
-        private readonly Dictionary<(string botName, string playerName), DateTime> _lastResponseTime = new();
+        private readonly Dictionary<string, List<ChatTurn>> _history = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DateTime> _lastSeen = new(StringComparer.OrdinalIgnoreCase);
         private readonly object _lockObj = new();
-
         private bool _disposed;
 
-        /// <summary>
-        /// Crea una nueva instancia del integrador LLM.
-        /// </summary>
-        public BotLLMDialogueIntegration(LocalLLMClient.LLMConfig config, ILogger<BotLLMDialogueIntegration>? logger = null)
+        public BotLLMDialogueIntegration(LocalLLMClient.LLMConfig config, ILoggerFactory loggerFactory)
         {
-            _logger = logger;
-            
-            // Inicializar DialogLogger con el ILogger proporcionado o crear uno temporal
-            if (logger != null)
-            {
-                DialogLogger.Initialize(logger);
-            }
-            else
-            {
-                using var factory = new Microsoft.Extensions.Logging.LoggerFactory();
-                var tempLogger = factory.CreateLogger<BotLLMDialogueIntegration>();
-                DialogLogger.Initialize(tempLogger);
-            }
-            
-            // Crear logger específico para LocalLLMClient usando LoggerFactory temporal si no hay uno disponible
-            using var llmFactory = new Microsoft.Extensions.Logging.LoggerFactory();
-            var llmLogger = llmFactory.CreateLogger<MUnique.OpenMU.GameLogic.Bots.LLMIntegration.LocalLLMClient>();
-            _llmClient = new LocalLLMClient(config, llmLogger);
-            
-            DialogLogger.Info("Integrador LLM inicializado para bot");
+            _logger = loggerFactory.CreateLogger<BotLLMDialogueIntegration>();
+            _llmClient = new LocalLLMClient(config, loggerFactory.CreateLogger<LocalLLMClient>());
+            _logger.LogInformation("LLM listo: {Url} modelo {Model}", config.BaseUrl, config.ModelName);
         }
 
-        /// <summary>
-        /// Procesa un mensaje del jugador y genera respuesta usando LLM.
-        /// </summary>
-        public async Task<string?> ProcessMessageAsync(
-            string botName,
-            BotDialogueConfig config,
-            string playerMessage,
-            string? context = null)
+        /// <summary>Responde a un jugador recordando la charla (últimos 8 intercambios, se olvida a los 5 min).</summary>
+        public async Task<string?> ReplyAsync(string botName, string playerName, string systemPrompt, string playerMessage)
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(BotLLMDialogueIntegration));
-
-            // Verificar cooldown POR JUGADOR (no global por bot)
-            var now = DateTime.UtcNow;
+            List<ChatTurn> turns;
             lock (_lockObj)
             {
-                // Extraer nombre del jugador del contexto o mensaje
-                string? playerName = null;
-                
-                if (!string.IsNullOrEmpty(context))
+                var now = DateTime.UtcNow;
+                if (!_history.TryGetValue(playerName, out var h)
+                    || now - _lastSeen.GetValueOrDefault(playerName) > TimeSpan.FromMinutes(5))
                 {
-                    // Contexto formato: "Jugador: Nombre. Nivel: X..."
-                    var match = System.Text.RegularExpressions.Regex.Match(context, @"Jugador:\s*(\w+)");
-                    if (match.Success)
-                        playerName = match.Groups[1].Value;
+                    h = new List<ChatTurn>();
+                    _history[playerName] = h;
                 }
 
-                // Si no se pudo extraer del contexto, usar el mensaje como fallback
-                if (string.IsNullOrEmpty(playerName))
-                    playerName = "unknown";
-
-                var key = (botName, playerName);
-                
-                if (_lastResponseTime.TryGetValue(key, out var lastTime))
-                {
-                    var elapsed = now - lastTime;
-                    if (elapsed.TotalSeconds < config.ResponseCooldownSeconds)
-                    {
-                        _logger?.LogDebug("Bot '{BotName}' en cooldown para jugador '{PlayerName}' ({Elapsed}s de {Cooldown}s)", botName, playerName, elapsed.TotalSeconds, config.ResponseCooldownSeconds);
-                        return null; // En cooldown, no responder
-                    }
-                }
-
-                _lastResponseTime[key] = now;
+                _lastSeen[playerName] = now;
+                turns = new List<ChatTurn>(h) { new("user", playerMessage) };
             }
 
-            // Verificar si el bot debe responder a este mensaje
-            if (config.GreetingOnlyMode && !IsLikelyGreeting(playerMessage))
+            var reply = await _llmClient.ChatAsync(systemPrompt, turns, botName).ConfigureAwait(false);
+            if (reply is null)
             {
-                return null; // No es saludo, no responder en modo greeting-only
-            }
-
-            // Generar respuesta con LLM
-            var response = await _llmClient.GenerateResponseAsync(
-                botName,
-                config.PersonalityDescription,
-                playerMessage,
-                context);
-
-            if (string.IsNullOrEmpty(response))
-            {
-                DialogLogger.Warn($"BotLLMDialogueIntegration: Bot '{botName}' no generó respuesta válida");
                 return null;
             }
 
-            return response;
+            lock (_lockObj)
+            {
+                var h = _history[playerName];
+                h.Add(new ChatTurn("user", playerMessage));
+                h.Add(new ChatTurn("assistant", reply));
+                if (h.Count > 16)
+                {
+                    h.RemoveRange(0, h.Count - 16);
+                }
+            }
+
+            return reply;
         }
 
         /// <summary>
@@ -166,12 +115,12 @@ namespace MUnique.OpenMU.GameLogic.Bots
             string? yarnNodeName = null)
         {
             // Esta es una implementación simplificada - en producción integrarías con YarnBotManager
-            var response = await ProcessMessageAsync(botName, config, playerMessage);
+            var reply = await ReplyAsync(botName, "player", config.PersonalityDescription, playerMessage).ConfigureAwait(false);
 
             return new HybridDialogueResult
             {
                 BotName = botName,
-                ResponseText = response,
+                ResponseText = reply,
                 ModeUsed = DialogueMode.LLMNatural,
                 HasOptions = false // En modo LLM puro no hay opciones predefinidas
             };
