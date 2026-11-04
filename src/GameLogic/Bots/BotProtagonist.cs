@@ -6,6 +6,7 @@ namespace MUnique.OpenMU.GameLogic.Bots;
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using Microsoft.Extensions.Logging;
 using MUnique.OpenMU.DataModel.Configuration;
 using MUnique.OpenMU.DataModel.Entities;
@@ -23,6 +24,10 @@ public abstract class BotProtagonist : BotPlayer
     private DateTimeOffset _nextThink;
     private Player? _target;
     private DateTimeOffset _targetUntil;
+
+    // Anti-spam y control de concurrencia LLM
+    private readonly Dictionary<Player, DateTimeOffset> _lastTalk = new();
+    private int _llmBusy;
 
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
@@ -154,8 +159,25 @@ public abstract class BotProtagonist : BotPlayer
         // Si PreferredMode == LLMNatural, llamar directamente ReactToChatAsyncLLM sin verificar cooldown/integrador nulo
         if (_dialogueConfig.PreferredMode == DialogueMode.LLMNatural)
         {
-            await ReactToChatAsyncLLM(sender, input).ConfigureAwait(false);
-            return;  // Salir inmediatamente - prioridad absoluta al modo LLM
+            var lower = message.ToLowerInvariant();
+            var named = lower.Contains(this.Name.ToLowerInvariant()) || lower.Contains(this.DefaultDialogueFile);
+            var talking = _lastTalk.TryGetValue(sender, out var last) && now - last < TimeSpan.FromSeconds(60);
+
+            // Lo nombran en cualquier parte de la frase, o ya está charlando con ese jugador.
+            if (!named && !talking)
+            {
+                return;
+            }
+
+            // Anti-spam: 2 segundos por jugador.
+            if (talking && now - last < TimeSpan.FromSeconds(2))
+            {
+                return;
+            }
+
+            _lastTalk[sender] = now;
+            await this.ReactToChatAsyncLLM(sender, input).ConfigureAwait(false);
+            return;
         }
 
         // Modo guiado por defecto (YarnSpinner) para PreferredMode == Guided o Hybrid
@@ -201,28 +223,16 @@ public abstract class BotProtagonist : BotPlayer
         if (_llmIntegration != null)
             return _llmIntegration;
 
-        // Configurar endpoint LM Studio accesible desde Docker o localhost nativo
         var llmConfig = new LocalLLMClient.LLMConfig
         {
-            BaseUrl = "http://host.docker.internal:1234",  // LM Studio accesible desde Docker
-            ModelName = "qwen/qwen3.5-35b-a3b",           // Modelo cargado actualmente
-            MaxTokens = 500,                               // Respuestas completas (no truncar a 60 chars)
-            Temperature = 0.7f,                            // Equilibrado (no demasiado creativo)
-            TimeoutSeconds = 30
+            BaseUrl = Environment.GetEnvironmentVariable("LLM_BASE_URL") ?? "http://host.docker.internal:1234",
+            ModelName = Environment.GetEnvironmentVariable("LLM_MODEL") ?? "qwen/qwen3.5-35b-a3b",
+            MaxTokens = 120,
+            Temperature = 0.8f,
+            TimeoutSeconds = 20,
         };
 
-        // Inyectar ILogger desde el GameContext para logging real en logs del servidor
-        var loggerFactory = this.GameContext?.LoggerFactory;
-        Microsoft.Extensions.Logging.ILogger<BotLLMDialogueIntegration>? logger = null;
-        
-        if (loggerFactory != null)
-        {
-            logger = loggerFactory.CreateLogger<BotLLMDialogueIntegration>();
-        }
-
-        _llmIntegration = new BotLLMDialogueIntegration(llmConfig, logger);
-        
-        DialogLogger.Info($"Bot '{this.Identity}' integrador LLM inicializado correctamente");
+        _llmIntegration = new BotLLMDialogueIntegration(llmConfig, this.GameContext.LoggerFactory);
         
         return _llmIntegration;
     }
@@ -239,46 +249,53 @@ public abstract class BotProtagonist : BotPlayer
     /// Procesa un mensaje del jugador usando LLM local para respuesta en lenguaje natural.
     /// Se llama solo cuando PreferredMode == DialogueMode.LLMNatural.
     /// </summary>
-    internal async ValueTask ReactToChatAsyncLLM(Player sender, string message)
+    internal ValueTask ReactToChatAsyncLLM(Player sender, string message)
     {
         if (!this.CanDiscussWith(sender))
-            return;
+        {
+            return ValueTask.CompletedTask;
+        }
 
-        // Obtener integrador LLM (inicialización diferida)
+        // Una respuesta por vez; si está pensando, ignora el mensaje.
+        if (Interlocked.Exchange(ref _llmBusy, 1) == 1)
+        {
+            return ValueTask.CompletedTask;
+        }
+
         var integration = this.GetOrCreateLlmIntegration();
-        
-        // Generar contexto para el LLM con información relevante del juego
-        string context = $"Jugador: {sender.Name}. Nivel: {sender.Level}. Clase: {sender.SelectedCharacter?.CharacterClass?.Name.ToString() ?? "Desconocida"}. Mapa: {this.CurrentMap?.Definition.Number ?? 0}.";
+        var systemPrompt = this.BuildSystemPrompt(sender); // se arma acá, en el hilo del bot
+        var playerName = sender.Name;
 
-        try
+        _ = Task.Run(async () =>
         {
-            // Generar respuesta contextualizada con el LLM
-            var response = await integration.ProcessMessageAsync(
-                this.Identity,
-                _dialogueConfig,
-                message,
-                context).ConfigureAwait(false);
-
-            if (string.IsNullOrEmpty(response))
+            try
             {
-                DialogLogger.Warn($"Bot '{this.Identity}' no generó respuesta válida del LLM");
-                return;
-            }
+                var reply = await integration.ReplyAsync(this.Name, playerName, systemPrompt, message).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(reply))
+                {
+                    return;
+                }
 
-            // Respuesta exitosa - enviar directamente al jugador sin usar SayAsync para evitar cooldown ambiental
-            await sender.InvokeViewPlugInAsync<MUnique.OpenMU.GameLogic.Views.IChatViewPlugIn>(
-                view => view.ChatMessageAsync(response, this.Name, MUnique.OpenMU.GameLogic.Views.ChatMessageType.Normal)).ConfigureAwait(false);
-            
-            DialogLogger.Info($"Bot '{this.Identity}' respondió con LLM: {response.Substring(0, System.Math.Min(50, response.Length))}...");
-        }
-        catch (System.Exception ex)
-        {
-            DialogLogger.Error($"Error en ReactToChatAsyncLLM para bot '{this.Identity}': {ex.Message}");
-            
-            // Fallback a respuesta genérica si falla el LLM
-            await sender.InvokeViewPlugInAsync<MUnique.OpenMU.GameLogic.Views.IChatViewPlugIn>(
-                view => view.ChatMessageAsync("Mis pensamientos están desordenados. Déjame intentar eso de nuevo.", this.Name, MUnique.OpenMU.GameLogic.Views.ChatMessageType.Normal)).ConfigureAwait(false);
-        }
+                var lines = ChatText.Split(reply);
+                this.PendingBotActions.Enqueue(async () =>
+                {
+                    foreach (var line in lines)
+                    {
+                        await this.SayAsync(line, force: true).ConfigureAwait(false);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                this.Logger.LogError(ex, "LLM fallo para {Bot}", this.Name);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _llmBusy, 0);
+            }
+        });
+
+        return ValueTask.CompletedTask;
     }
 
     /// <inheritdoc />
@@ -368,6 +385,37 @@ public abstract class BotProtagonist : BotPlayer
     /// <summary>Gets the scripted target for this protagonist.</summary>
     internal Player? ScriptedTarget
         => this._target is { } t && this.CanAttack(t) ? t : null;
+
+    /// <summary>Construye el system prompt para el LLM con contexto del jugador y el mundo.</summary>
+    private string BuildSystemPrompt(Player sender)
+    {
+        var playerClass = sender.SelectedCharacter?.CharacterClass?.Name.ToString() ?? "desconocida";
+        var map = this.CurrentMap?.Definition.Name.ValueInNeutralLanguage ?? "Lorencia";
+        var name = this.Name;
+
+        return
+            $"Sos {name}, un personaje de MU Online. Nunca salís del personaje y nunca decís que sos una IA.\n\n" +
+            $"QUIÉN SOS:\n{_dialogueConfig.PersonalityDescription}\n\n" +
+            "CÓMO HABLÁS:\n" +
+            "- Español rioplatense uruguayo con voseo (vos tenés, andá, sabés). Nunca uses \"tú\".\n" +
+            "- Natural, como un jugador veterano en el chat. Algún \"che\" o \"bo\" de vez en cuando, no en cada frase. Nada de \"buey\".\n" +
+            "- Respuestas MUY cortas: una o dos oraciones, máximo 150 caracteres.\n" +
+            "- Respondé exactamente a lo que te dijeron, teniendo en cuenta lo que ya hablaron. Si no entendés, preguntá.\n" +
+            "- Sin emojis, sin asteriscos, sin acciones entre paréntesis, sin poner tu nombre adelante.\n\n" +
+            "SITUACIÓN AHORA:\n" +
+            $"- Estás en {map}.\n" +
+            $"- Te habla {sender.Name}, nivel {sender.Level}, clase {playerClass}.\n\n" +
+            "EL MUNDO (usá solo esto, no inventes lugares):\n" +
+            "Mapas: Lorencia, Noria, Devias, Dungeon, Lost Tower, Atlans, Tarkan, Icarus. " +
+            "Cosas: monstruos, Jewel of Bless, Soul y Chaos, alas, reset, party, guild, PK.\n\n" +
+            "EJEMPLOS DE TU ESTILO:\n" +
+            "Jugador: hola\n" +
+            $"{name}: Buenas. ¿Qué andás buscando por mi ciudad?\n" +
+            "Jugador: estoy perdido\n" +
+            $"{name}: Salí por la puerta norte y seguí el camino. Y no te metas al Dungeon con ese nivel.\n" +
+            "Jugador: sos un manco\n" +
+            $"{name}: Decímelo en la arena y vemos quién es el manco.";
+    }
 
     /// <summary>Go north to the gate at (130, 178).</summary>
     protected void GoNorth()
