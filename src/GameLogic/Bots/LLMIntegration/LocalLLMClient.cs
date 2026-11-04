@@ -242,6 +242,9 @@ public class LocalLLMClient : IDisposable
 
         [JsonPropertyName("reasoning_effort")]
         public string ReasoningEffort { get; set; } = "none";
+
+        [JsonPropertyName("response_format")]
+        public object? ResponseFormat { get; set; }
     }
 
     private class LLMResponseDto
@@ -273,6 +276,28 @@ public class LocalLLMClient : IDisposable
         PropertyNameCaseInsensitive = true,
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    private static readonly object IntentSchema = new
+    {
+        type = "json_schema",
+        json_schema = new
+        {
+            name = "npc_intent",
+            strict = true,
+            schema = new
+            {
+                type = "object",
+                properties = new Dictionary<string, object>
+                {
+                    ["say"] = new { type = "string" },
+                    ["action"] = new { type = "string", @enum = new[] { "none", "follow", "guide", "fight", "stop" } },
+                    ["place"] = new { type = "string", @enum = new[] { "", "lorencia", "devias", "noria" } },
+                },
+                required = new[] { "say", "action", "place" },
+                additionalProperties = false,
+            },
+        },
     };
 
     private string SanitizeAndStripReasoning(string text)
@@ -346,6 +371,73 @@ public class LocalLLMClient : IDisposable
         {
             _logger.LogError(ex, "LLM fallo para {Bot}", botName);
             DialogLogger.Error($"Error en ChatAsync: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Cómo ChatAsync, pero el modelo responde JSON {say, action, place}. Null si falla.</summary>
+    public async Task<NpcIntent?> ChatIntentAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var messages = new List<ChatMessageDto> { new() { Role = "system", Content = systemPrompt } };
+            messages.AddRange(turns.Select(t => new ChatMessageDto { Role = t.Role, Content = t.Content }));
+
+            var request = new LLMRequest
+            {
+                Model = _modelName,
+                Messages = messages.ToArray(),
+                MaxTokens = _maxTokens,
+                Temperature = _config.Temperature,
+                Stream = false,
+                ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
+                ResponseFormat = IntentSchema,
+            };
+
+            var json = JsonSerializer.Serialize(request, JsonOptions);
+            using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            using var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("LM Studio HTTP {Status}: {Body}", response.StatusCode, body);
+                return null;
+            }
+
+            var result = JsonSerializer.Deserialize<LLMResponseDto>(body, JsonOptions);
+            var raw = result?.Choices.FirstOrDefault()?.Message.Content;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            raw = System.Text.RegularExpressions.Regex.Replace(raw, @"</think>", "", System.Text.RegularExpressions.RegexOptions.Singleline).Trim();
+
+            NpcIntent intent;
+            try
+            {
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+                var say = root.TryGetProperty("say", out var s) ? s.GetString() : null;
+                var actionText = root.TryGetProperty("action", out var a) ? a.GetString() : null;
+                var place = root.TryGetProperty("place", out var p) ? p.GetString() : null;
+                var action = Enum.TryParse<NpcActionKind>(actionText, true, out var parsed) ? parsed : NpcActionKind.None;
+                intent = new NpcIntent(ChatText.Clean(say, botName), action, place);
+            }
+            catch (JsonException)
+            {
+                // El modelo no respetó el JSON: usar todo como texto y no hacer nada.
+                intent = new NpcIntent(ChatText.Clean(raw, botName), NpcActionKind.None, null);
+            }
+
+            _logger.LogInformation("LLM {Bot} <- '{Last}' -> say='{Say}' action={Action} place={Place}", botName, turns.LastOrDefault()?.Content, intent.Say, intent.Action, intent.Place);
+            return intent;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "LLM fallo para {Bot}", botName);
+            DialogLogger.Error($"Error en ChatIntentAsync: {ex.Message}");
             return null;
         }
     }
