@@ -205,6 +205,28 @@ public sealed class ProtagonistFeaturePlugIn : IFeaturePlugIn, IPeriodicTaskPlug
     public ValueTask AttackableGotKilledAsync(IAttackable killed, IAttacker? killer)
 
     {
+        if (killed is Player human && human is not OfflinePlayer && human.CurrentMiniGame is null
+            && human.CurrentMap is { } deathMap && human.GameContext is GameContext context
+            && this._states.TryGetValue(context, out var state) && state.World is { } world && world.Configuration.Enabled)
+        {
+            // Capture visibility now: the victim can leave the map before the bot drains its queue.
+            foreach (var witness in world.GetAllBots().ToArray())
+            {
+                if (witness.IsDisposed || witness.IsDisposing || witness.CurrentMiniGame is not null
+                    || !ReferenceEquals(witness.CurrentMap, deathMap) || !witness.IsInRange(human.Position, 12))
+                {
+                    continue;
+                }
+
+                var kind = ReferenceEquals(witness, killer) ? WorldEventKind.PlayerKilledByProtagonist : WorldEventKind.PlayerDied;
+                var text = ReferenceEquals(witness, killer) ? $"Mataste a {human.Name}" : $"Jugador {human.Name} murió cerca";
+                witness.PendingBotActions.Enqueue(() =>
+                {
+                    witness.RecordWorldEvent(kind, human, text);
+                    return ValueTask.CompletedTask;
+                });
+            }
+        }
 
         if (killer is BotProtagonist protagonist && killed is Player victim && victim is not OfflinePlayer
 

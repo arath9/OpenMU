@@ -361,6 +361,18 @@ public abstract class BotProtagonist : BotPlayer
         await new ChatMessageAction().ChatMessageAsync(this, this.Name, message, false).ConfigureAwait(false);
     }
 
+    /// <summary>Records a world notification on the serialized bot queue.</summary>
+    internal void RecordWorldEvent(WorldEventKind kind, Player? who, string text)
+    {
+        if (!this.Settings.Enabled || this.IsDisposed || this.IsDisposing)
+        {
+            return;
+        }
+
+        this._perception.AddEvent(kind, who, text);
+        this.Logger.LogDebug("Percepcion {Bot}: {Kind} {Who}", this.Name, kind, who?.Name);
+    }
+
     protected abstract ValueTask ThinkAsync(DateTimeOffset now);
 
     protected IEnumerable<Player> NearbyHumans()
