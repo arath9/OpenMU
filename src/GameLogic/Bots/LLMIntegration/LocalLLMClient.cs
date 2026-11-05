@@ -278,27 +278,36 @@ public class LocalLLMClient : IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    private static readonly object IntentSchema = new
+    private static object CreateIntentSchema(IReadOnlyList<string>? targets)
     {
-        type = "json_schema",
-        json_schema = new
+        var properties = new Dictionary<string, object>
         {
-            name = "npc_intent",
-            strict = true,
-            schema = new
+            ["say"] = new { type = "string" },
+            ["action"] = new { type = "string", @enum = new[] { "none", "follow", "guide", "fight", "stop" } },
+            ["place"] = new { type = "string", @enum = new[] { "", "lorencia", "devias", "noria" } },
+        };
+        if (targets is not null)
+        {
+            properties["target"] = new { type = "string", @enum = targets.Append(string.Empty).Distinct().ToArray() };
+        }
+
+        return new
+        {
+            type = "json_schema",
+            json_schema = new
             {
-                type = "object",
-                properties = new Dictionary<string, object>
+                name = "npc_intent",
+                strict = true,
+                schema = new
                 {
-                    ["say"] = new { type = "string" },
-                    ["action"] = new { type = "string", @enum = new[] { "none", "follow", "guide", "fight", "stop" } },
-                    ["place"] = new { type = "string", @enum = new[] { "", "lorencia", "devias", "noria" } },
+                    type = "object",
+                    properties,
+                    required = properties.Keys.ToArray(),
+                    additionalProperties = false,
                 },
-                required = new[] { "say", "action", "place" },
-                additionalProperties = false,
             },
-        },
-    };
+        };
+    }
 
     private string SanitizeAndStripReasoning(string text)
     {
@@ -376,7 +385,17 @@ public class LocalLLMClient : IDisposable
     }
 
     /// <summary>Cómo ChatAsync, pero el modelo responde JSON {say, action, place}. Null si falla.</summary>
-    public async Task<NpcIntent?> ChatIntentAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, CancellationToken cancellationToken = default)
+    public Task<NpcIntent?> ChatIntentAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, CancellationToken cancellationToken = default)
+        => this.ChatIntentAsync(systemPrompt, turns, botName, null, cancellationToken);
+
+    /// <summary>Requests an autonomous intent with a target restricted to the supplied nearby humans.</summary>
+    /// <param name="systemPrompt">The captured world situation.</param>
+    /// <param name="turns">The request turns.</param>
+    /// <param name="botName">The speaker name.</param>
+    /// <param name="targets">Allowed human names; null preserves the chat schema.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The proposed intent, or null on failure.</returns>
+    public async Task<NpcIntent?> ChatIntentAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, IReadOnlyList<string>? targets, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -391,7 +410,7 @@ public class LocalLLMClient : IDisposable
                 Temperature = _config.Temperature,
                 Stream = false,
                 ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
-                ResponseFormat = IntentSchema,
+                ResponseFormat = CreateIntentSchema(targets),
             };
 
             var json = JsonSerializer.Serialize(request, JsonOptions);
@@ -423,7 +442,8 @@ public class LocalLLMClient : IDisposable
                 var actionText = root.TryGetProperty("action", out var a) ? a.GetString() : null;
                 var place = root.TryGetProperty("place", out var p) ? p.GetString() : null;
                 var action = Enum.TryParse<NpcActionKind>(actionText, true, out var parsed) ? parsed : NpcActionKind.None;
-                intent = new NpcIntent(ChatText.Clean(say, botName), action, place);
+                var target = root.TryGetProperty("target", out var t) ? t.GetString() : null;
+                intent = new NpcIntent(ChatText.Clean(say, botName), action, place) { Target = target ?? string.Empty };
             }
             catch (JsonException)
             {

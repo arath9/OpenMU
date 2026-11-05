@@ -24,7 +24,11 @@ public enum NpcActionKind
 }
 
 /// <summary>Lo que el LLM decidió: qué decir y qué hacer.</summary>
-public sealed record NpcIntent(string Say, NpcActionKind Action, string? Place);
+public sealed record NpcIntent(string Say, NpcActionKind Action, string? Place)
+{
+    /// <summary>Gets the nearby human selected by an autonomous decision; empty means no target.</summary>
+    public string Target { get; init; } = string.Empty;
+}
 
 /// <summary>Lugares a los que un protagonista puede guiar (solo mapas permitidos, puntos caminables de la patrulla).</summary>
 public static class NpcPlaces
