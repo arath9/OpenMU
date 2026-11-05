@@ -70,21 +70,19 @@ public class NpcPerception
         var result = new List<WorldEvent>();
         var currentSet = new HashSet<Player>(currentNearbyHumans);
 
-        if (_lastNearbyHumans != null)
+        var previousSet = this._lastNearbyHumans ?? new HashSet<Player>();
+        foreach (var arrived in currentSet.Except(previousSet))
         {
-            // Llegaron nuevos jugadores al rango
-            foreach (var arrived in currentSet.Except(_lastNearbyHumans))
-            {
-                result.Add(new WorldEvent(WorldEventKind.PlayerArrived, arrived, $"Jugador {arrived.Name} llegó cerca", DateTimeOffset.UtcNow));
-            }
-
-            // Salieron jugadores del rango
-            foreach (var left in _lastNearbyHumans.Except(currentSet))
-            {
-                result.Add(new WorldEvent(WorldEventKind.PlayerLeft, left, $"Jugador {left.Name} salió de cerca", DateTimeOffset.UtcNow));
-            }
+            result.Add(new WorldEvent(WorldEventKind.PlayerArrived, arrived, $"Jugador {arrived.Name} llegó cerca", DateTimeOffset.UtcNow));
         }
 
+        foreach (var left in previousSet.Except(currentSet))
+        {
+            result.Add(new WorldEvent(WorldEventKind.PlayerLeft, left, $"Jugador {left.Name} salió de cerca", DateTimeOffset.UtcNow));
+        }
+
+        this._events.AddRange(result);
+        this.Prune();
         _lastNearbyHumans = currentSet;
         return result;
     }
