@@ -35,6 +35,9 @@ public abstract class BotProtagonist : BotPlayer
     private ProtagonistWaypoint? _actionPlace;
     private DateTimeOffset _actionUntil;
 
+    // Percepción del mundo (eventos cercanos)
+    private readonly NpcPerception _perception = new();
+
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
 
@@ -86,6 +89,20 @@ public abstract class BotProtagonist : BotPlayer
             this._target = null;
         }
 
+        // Percepción: detectar eventos cercanos
+        var nearbyHumans = this.NearbyHumans();
+        foreach (var evt in this._perception.UpdateNearbyHumans(nearbyHumans))
+        {
+            if (evt.Kind == WorldEventKind.PlayerArrived)
+            {
+                this.Logger.LogDebug("Percepcion {Bot}: PlayerArrived {Who}", this.Name, evt.Who?.Name);
+            }
+            else if (evt.Kind == WorldEventKind.PlayerLeft)
+            {
+                this.Logger.LogDebug("Percepcion {Bot}: PlayerLeft {Who}", this.Name, evt.Who?.Name);
+            }
+        }
+
         // Si hay una acción en curso, manda la acción; si no, la personalidad.
         if (!await this.UpdateActionAsync(now).ConfigureAwait(false))
         {
@@ -134,14 +151,19 @@ public abstract class BotProtagonist : BotPlayer
             var nowLlm = DateTimeOffset.UtcNow;
             var talking = _lastTalk.TryGetValue(sender, out var last) && nowLlm - last < TimeSpan.FromSeconds(60);
 
-            // Lo nombran en cualquier parte de la frase, o ya está charlando con ese jugador.
-            if (!named && !talking)
+            // Permitir respuestas sin nombrar explícitamente si:
+            // 1. Lo nombran (named=true), O
+            // 2. Ya está charlando con ese jugador en la última hora (talking=true), O
+            // 3. Es un saludo básico sin nombramiento (hola, buenas, que pasa)
+            var isGreeting = new[] { "hola", "buenas", "que pasa" }.Contains(lower);
+
+            if (!named && !talking && !isGreeting)
             {
-                return;
+                return; // No lo nombra, no está charlando, y no es saludo básico
             }
 
             // Anti-spam: 2 segundos por jugador.
-            if (talking && nowLlm - last < TimeSpan.FromSeconds(2))
+            if (nowLlm - last < TimeSpan.FromSeconds(2))
             {
                 return;
             }
