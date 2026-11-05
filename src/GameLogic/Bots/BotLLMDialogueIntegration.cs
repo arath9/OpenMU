@@ -147,7 +147,7 @@ namespace MUnique.OpenMU.GameLogic.Bots
         /// <param name="systemPrompt">The captured perception and personality.</param>
         /// <param name="targets">The nearby human names accepted by the schema.</param>
         /// <returns>The proposed autonomous intent.</returns>
-        internal Task<NpcIntent?> ThinkIntentAsync(string botName, string systemPrompt, IReadOnlyList<string> targets)
+        public Task<NpcIntent?> ThinkIntentAsync(string botName, string systemPrompt, IReadOnlyList<string> targets)
             => this._llmClient.ChatIntentAsync(systemPrompt, new[] { new ChatTurn("user", "Decidí si reaccionar a lo que acaba de pasar.") }, botName, targets);
 
         /// <summary>
