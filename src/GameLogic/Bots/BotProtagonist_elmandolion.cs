@@ -35,12 +35,27 @@ public sealed class BotProtagonist_elmandolion : BotProtagonist
                 this.Engage(this.NearbyHumans().FirstOrDefault(p => !p.IsAtSafezone()));
             }
 
-            await this.SayAsync("Lorencia es mia. Salgan si se atreven.").ConfigureAwait(false);
+            if (this.AutonomousThinkingEnabled)
+            {
+                this.ThinkAsyncLLM(now);
+            }
+            else
+            {
+                await this.SayAsync("Lorencia es mia. Salgan si se atreven.").ConfigureAwait(false);
+            }
+
             return;
         }
 
         this.GoNorth();
         this.Engage(this.World.GetBot(1));
-        await this.SayAsync("bertoSalamin, deja de esconderte detras de los debiles.").ConfigureAwait(false);
+        if (this.AutonomousThinkingEnabled)
+        {
+            this.ThinkAsyncLLM(now);
+        }
+        else
+        {
+            await this.SayAsync("bertoSalamin, deja de esconderte detras de los debiles.").ConfigureAwait(false);
+        }
     }
 }

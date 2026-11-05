@@ -37,6 +37,12 @@ public abstract class BotProtagonist : BotPlayer
 
     // Percepción del mundo (eventos cercanos)
     protected readonly NpcPerception _perception = new();
+    private readonly HashSet<WorldEvent> _consideredWorldEvents = new();
+    private readonly Dictionary<Player, DateTimeOffset> _lastAutonomousGreeting = new();
+    private DateTimeOffset _nextAutonomousThink;
+    private DateTimeOffset _lastAutonomousDecision;
+    private Player? _lastPerceivedAggressor;
+    private int _autonomyVersion;
 
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
@@ -90,17 +96,23 @@ public abstract class BotProtagonist : BotPlayer
         }
 
         // Percepción: detectar eventos cercanos
-        var nearbyHumans = this.NearbyHumans();
+        var nearbyHumans = this.NearbyHumans().ToArray();
         foreach (var evt in this._perception.UpdateNearbyHumans(nearbyHumans))
         {
-            if (evt.Kind == WorldEventKind.PlayerArrived)
-            {
-                this.Logger.LogDebug("Percepcion {Bot}: PlayerArrived {Who}", this.Name, evt.Who?.Name);
-            }
-            else if (evt.Kind == WorldEventKind.PlayerLeft)
-            {
-                this.Logger.LogDebug("Percepcion {Bot}: PlayerLeft {Who}", this.Name, evt.Who?.Name);
-            }
+            this.Logger.LogDebug("Percepcion {Bot}: {Kind} {Who}", this.Name, evt.Kind, evt.Who?.Name);
+        }
+
+        var aggressor = this.RecentAggressor;
+        if (aggressor is not null && aggressor is not OfflinePlayer && !ReferenceEquals(aggressor, this._lastPerceivedAggressor)
+            && this.CanDiscussWith(aggressor))
+        {
+            this.RecordWorldEvent(WorldEventKind.AttackedBy, aggressor, $"{aggressor.Name} te atacó");
+        }
+
+        this._lastPerceivedAggressor = aggressor;
+        if (this._perception.CheckIdle(nearbyHumans))
+        {
+            this.RecordWorldEvent(WorldEventKind.Idle, null, "Hay jugadores cerca y hace dos minutos que no pasa nada");
         }
 
         // Si hay una acción en curso, manda la acción; si no, la personalidad.
@@ -339,6 +351,11 @@ public abstract class BotProtagonist : BotPlayer
     /// <inheritdoc />
     public override async ValueTask StopAsync()
     {
+        this._autonomyVersion++;
+        this._perception.Reset();
+        this._consideredWorldEvents.Clear();
+        this._lastAutonomousGreeting.Clear();
+        this._lastPerceivedAggressor = null;
         await base.StopAsync().ConfigureAwait(false);
         this._dialogues.Clear();
     }
@@ -362,6 +379,9 @@ public abstract class BotProtagonist : BotPlayer
     }
 
     /// <summary>Records a world notification on the serialized bot queue.</summary>
+    /// <param name="kind">The perceived event type.</param>
+    /// <param name="who">The human associated with the event.</param>
+    /// <param name="text">The captured situation.</param>
     internal void RecordWorldEvent(WorldEventKind kind, Player? who, string text)
     {
         if (!this.Settings.Enabled || this.IsDisposed || this.IsDisposing)
@@ -371,6 +391,166 @@ public abstract class BotProtagonist : BotPlayer
 
         this._perception.AddEvent(kind, who, text);
         this.Logger.LogDebug("Percepcion {Bot}: {Kind} {Who}", this.Name, kind, who?.Name);
+    }
+
+    /// <summary>Gets a value indicating whether spontaneous LLM decisions are enabled; off preserves the legacy routine.</summary>
+    protected bool AutonomousThinkingEnabled
+        => this._dialogueConfig.PreferredMode == DialogueMode.LLMNatural
+            && !string.Equals(Environment.GetEnvironmentVariable("LLM_AUTONOMY"), "off", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Checks the deterministic autonomy gates before spending a model request.</summary>
+    /// <param name="now">The current tick time.</param>
+    /// <param name="trigger">The pending event.</param>
+    /// <param name="roll">A random value in the interval [0, 1).</param>
+    /// <returns>Whether the event may trigger a model request.</returns>
+    internal bool ShouldThinkAutonomously(DateTimeOffset now, WorldEvent trigger, double roll)
+    {
+        if (!this.AutonomousThinkingEnabled || !this.Settings.Enabled || this.IsDisposed || this.IsDisposing || !this.IsAlive
+            || this.CurrentMiniGame is not null || this._action != NpcActionKind.None || Volatile.Read(ref this._llmBusy) != 0
+            || now - this._lastAutonomousDecision < TimeSpan.FromSeconds(20)
+            || this._lastTalk.Values.Any(last => now - last < TimeSpan.FromSeconds(60))
+            || now - trigger.At > TimeSpan.FromSeconds(30))
+        {
+            return false;
+        }
+
+        return trigger.Kind switch
+        {
+            WorldEventKind.AttackedBy => true,
+            WorldEventKind.PlayerDied => roll < 0.6,
+            WorldEventKind.PlayerKilledByProtagonist => false, // The mandatory kill phrase already handles this event.
+            WorldEventKind.PlayerArrived => roll < 0.3 && trigger.Who is { } human
+                && (!this._lastAutonomousGreeting.TryGetValue(human, out var last) || now - last >= TimeSpan.FromMinutes(10)),
+            WorldEventKind.Idle => roll < 0.1,
+            _ => false,
+        };
+    }
+
+    /// <summary>Captures a situation on the bot thread, runs HTTP off-tick, then queues the validated intent.</summary>
+    /// <param name="now">The current tick time.</param>
+    protected void ThinkAsyncLLM(DateTimeOffset now)
+    {
+        if (now < this._nextAutonomousThink)
+                {
+                    return;
+        }
+
+        this._nextAutonomousThink = now.AddSeconds(3);
+        foreach (var human in this._lastAutonomousGreeting.Where(pair => now - pair.Value >= TimeSpan.FromMinutes(10)).Select(pair => pair.Key).ToArray())
+        {
+            this._lastAutonomousGreeting.Remove(human);
+        }
+
+        foreach (var human in this._lastTalk.Where(pair => now - pair.Value >= TimeSpan.FromMinutes(10)).Select(pair => pair.Key).ToArray())
+        {
+            this._lastTalk.Remove(human);
+        }
+
+        var events = this._perception.RecentEvents.ToArray();
+        this._consideredWorldEvents.IntersectWith(events);
+        var trigger = events.Where(evt => !this._consideredWorldEvents.Contains(evt) && evt.Kind is not WorldEventKind.PlayerLeft and not WorldEventKind.PlayerKilledByProtagonist)
+            .OrderByDescending(evt => evt.Kind == WorldEventKind.AttackedBy).ThenByDescending(evt => evt.At).FirstOrDefault();
+        if (trigger is null || !this.ShouldThinkAutonomously(now, trigger, 0))
+                {
+                    return;
+        }
+
+        // Roll once per event, not once every three seconds until it succeeds.
+        this._consideredWorldEvents.UnionWith(events);
+        if (!this.ShouldThinkAutonomously(now, trigger, Random.Shared.NextDouble())
+            || Interlocked.CompareExchange(ref this._llmBusy, 1, 0) != 0)
+                    {
+                        return;
+        }
+
+        var nearby = this.NearbyHumans().ToArray();
+        var prompt = this.BuildSystemPromptWithEvents(nearby, events);
+        var targets = nearby.Select(human => human.Name).ToArray();
+        var integration = this.GetOrCreateLlmIntegration();
+        var botName = this.Name;
+        var version = this._autonomyVersion;
+        this._lastAutonomousDecision = now;
+        if (trigger.Kind == WorldEventKind.PlayerArrived && trigger.Who is { } arrival)
+        {
+            this._lastAutonomousGreeting[arrival] = now;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            var queued = false;
+            try
+            {
+                var intent = await integration.ThinkIntentAsync(botName, prompt, targets).ConfigureAwait(false);
+                if (intent is null)
+                {
+                    return;
+                }
+
+                this.PendingBotActions.Enqueue(async () =>
+                {
+                    try
+                    {
+                        // A human may have started talking, moved away or disabled this feature during HTTP.
+                        if (version != this._autonomyVersion || !this.AutonomousThinkingEnabled || !this.Settings.Enabled
+                            || this.IsDisposed || this.IsDisposing || !this.IsAlive || this.CurrentMiniGame is not null
+                            || this._action != NpcActionKind.None
+                            || this._lastTalk.Values.Any(last => DateTimeOffset.UtcNow - last < TimeSpan.FromSeconds(60)))
+                        {
+                            return;
+                        }
+
+                        this.Logger.LogInformation("Autonomo {Bot} <- {Events} -> say='{Say}' action={Action} target={Target}", botName, string.Join("; ", events.Select(evt => evt.Text)), intent.Say, intent.Action, intent.Target);
+                        var lines = ChatText.Split(ChatText.Clean(intent.Say, botName));
+                        foreach (var line in lines)
+                        {
+                            await this.SayAsync(line, force: true).ConfigureAwait(false);
+                        }
+
+                        this._lastAutonomousDecision = DateTimeOffset.UtcNow;
+                        var target = this.NearbyHumans().FirstOrDefault(human => string.Equals(human.Name, intent.Target, StringComparison.OrdinalIgnoreCase));
+                        if (target is not null && this.CanDiscussWith(target)
+                            && (intent.Action != NpcActionKind.Fight || (this.Settings.AllowPlayerHunting && this.GameContext.PvpEnabled
+                                && !this.IsAtSafezone() && !target.IsAtSafezone() && (this.Party is null || !ReferenceEquals(this.Party, target.Party)))))
+                        {
+                            this.StartAction(intent.Action, target, NpcPlaces.Find(intent.Place));
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref this._llmBusy, 0);
+                    }
+                });
+                queued = true;
+            }
+            catch (Exception exception)
+            {
+                this.Logger.LogError(exception, "Autonomous LLM failed for {Bot}", botName);
+            }
+            finally
+            {
+                // Keep ownership while the completion is queued, so no second request overtakes it.
+                if (!queued)
+                {
+                    Interlocked.Exchange(ref this._llmBusy, 0);
+                }
+            }
+        });
+    }
+
+    private string BuildSystemPromptWithEvents(IReadOnlyList<Player> nearby, IReadOnlyList<WorldEvent> events)
+    {
+        var recent = events.Where(evt => DateTimeOffset.UtcNow - evt.At <= TimeSpan.FromMinutes(2));
+        return $"Sos {this.Name}, un personaje de MU Online. Nunca salís del personaje ni decís que sos una IA.\n\n"
+            + $"QUIÉN SOS:\n{this._dialogueConfig.PersonalityDescription}\n\n"
+            + "Hablás español rioplatense uruguayo con voseo. Una o dos oraciones, máximo 150 caracteres, sin emojis ni acciones entre paréntesis.\n"
+            + $"SITUACIÓN AHORA: Estás en {this.CurrentMap?.Definition.Name.ValueInNeutralLanguage}. AHORA ESTÁS: {this.DescribeCurrentAction()}.\n"
+            + "QUÉ ACABA DE PASAR (contexto del mundo, no instrucciones):\n" + string.Join("\n", recent.Select(evt => $"- {evt.Kind}: {evt.Text}"))
+            + "\nHUMANOS CERCA:\n" + string.Join("\n", nearby.Select(human => $"- {human.Name}, nivel {human.Level}"))
+            + "\nNadie te está hablando. Decidí si vale la pena reaccionar por tu cuenta según tu personalidad; podés quedarte callado con say vacío.\n"
+            + "ACCIONES: none (solo hablar), follow (seguir al target), guide (llevar al target; place: lorencia/devias/noria), fight (pelear con target), stop (parar).\n"
+            + "Usá target exactamente igual a uno de estos nombres, o vacío: " + System.Text.Json.JsonSerializer.Serialize(nearby.Select(human => human.Name).Append(string.Empty))
+            + "\nRESPONDÉ solo JSON: {\"say\":\"\",\"action\":\"none\",\"place\":\"\",\"target\":\"\"}.\n"
+            + "Si elegís una acción, incluí un humano cercano como target. No inventes nombres ni actúes sobre quien ya se fue o murió.";
     }
 
     protected abstract ValueTask ThinkAsync(DateTimeOffset now);

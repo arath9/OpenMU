@@ -142,6 +142,14 @@ namespace MUnique.OpenMU.GameLogic.Bots
             return intent;
         }
 
+        /// <summary>Decides from a captured world situation without adding it to a human's chat history.</summary>
+        /// <param name="botName">The speaker name.</param>
+        /// <param name="systemPrompt">The captured perception and personality.</param>
+        /// <param name="targets">The nearby human names accepted by the schema.</param>
+        /// <returns>The proposed autonomous intent.</returns>
+        internal Task<NpcIntent?> ThinkIntentAsync(string botName, string systemPrompt, IReadOnlyList<string> targets)
+            => this._llmClient.ChatIntentAsync(systemPrompt, new[] { new ChatTurn("user", "Decidí si reaccionar a lo que acaba de pasar.") }, botName, targets);
+
         /// <summary>
         /// Procesa un mensaje del jugador en modo híbrido.
         /// Primero intenta YarnSpinner, si hay opciones muestra botones, luego permite texto libre.
