@@ -36,7 +36,7 @@ public abstract class BotProtagonist : BotPlayer
     private DateTimeOffset _actionUntil;
 
     // Percepción del mundo (eventos cercanos)
-    private readonly NpcPerception _perception = new();
+    protected readonly NpcPerception _perception = new();
 
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
