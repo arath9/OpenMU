@@ -43,6 +43,7 @@ public static class Extensions
         }
 
         return services
+            .AddSocialMemoryRepository()
             .AddSingleton<IMigratableDatabaseContextProvider, PersistenceContextProvider>()
             .AddSingleton(s => (PersistenceContextProvider)s.GetService<IMigratableDatabaseContextProvider>()!)
             .AddSingleton(s => (IPersistenceContextProvider)s.GetService<IMigratableDatabaseContextProvider>()!)

@@ -180,6 +180,11 @@ public sealed class OfflinePlayerMuHelper : AsyncDisposable
             return;
         }
 
+        if (this._player is Bots.BotProtagonist protagonist)
+        {
+            await protagonist.TickProtagonistAsync().ConfigureAwait(false);
+        }
+
         if (!await this._zenHandler.DeductZenAsync().ConfigureAwait(false))
         {
             if (this._player.Account?.LoginName is { } loginName)
@@ -209,6 +214,11 @@ public sealed class OfflinePlayerMuHelper : AsyncDisposable
         await this._itemPickupHandler.PickupItemsAsync().ConfigureAwait(false);
 
         if (this._player.IsWalking)
+        {
+            return;
+        }
+
+        if (this._player is Bots.BotProtagonist { CanFarm: false, ScriptedTarget: null })
         {
             return;
         }

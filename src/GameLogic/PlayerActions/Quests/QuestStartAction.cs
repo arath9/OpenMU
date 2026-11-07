@@ -28,6 +28,14 @@ public class QuestStartAction
             return;
         }
 
+        await this.StartQuestAsync(player, quest).ConfigureAwait(false);
+    }
+
+    /// <summary>Starts a quest resolved from trusted server dialogue, retaining normal level, cost and repeat guards.</summary>
+    internal async ValueTask StartQuestAsync(Player player, MUnique.OpenMU.DataModel.Configuration.Quests.QuestDefinition quest)
+    {
+        using var loggerScope = player.Logger.BeginScope(this.GetType());
+        var group = quest.Group;
         if (quest.MinimumCharacterLevel > player.Level || (quest.MaximumCharacterLevel > 0 && quest.MaximumCharacterLevel < player.Level))
         {
             player.Logger.LogDebug("Failed, character level {0} not in allowed range {1} to {2}.", player.Level, quest.MinimumCharacterLevel, quest.MaximumCharacterLevel);

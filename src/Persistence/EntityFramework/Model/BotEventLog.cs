@@ -32,7 +32,7 @@ public class BotEventLog
     /// <summary>
     /// Tipo de evento (huntingParty, duel, betrayal, rescue, giftGiving).
     /// </summary>
-    public EventType EventType { get; set; }
+    public ISocialMemoryRepository.EventType EventType { get; set; }
 
     /// <summary>
     /// Contexto adicional del evento (detalles específicos del evento ocurrido).
@@ -45,16 +45,4 @@ public class BotEventLog
     /// </summary>
     [Required]
     public DateTime Timestamp { get; set; }
-
-    /// <summary>
-    /// Enum para tipos de eventos dinámicos.
-    /// </summary>
-    public enum EventType
-    {
-        HuntingParty = 1,    // Cacería en grupo programada
-        Duel = 2,           // Duelo entre bots/NPCs
-        Betrayal = 3,       // Traición (LeilaMasa)
-        Rescue = 4,         // Rescate de aliado
-        GiftGiving = 5      // Regalo ceremonial
-    }
 }

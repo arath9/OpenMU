@@ -19,6 +19,11 @@
 
   <ItemGroup>
     <None Remove="PlugIns\InvasionEvents\" />
+    <!-- Standalone experiments (including nested obj) are not server sources. -->
+    <Compile Remove="Bots\YarnSpinner\**\*.cs" />
+    <EmbeddedResource Remove="Bots\YarnSpinner\**\*" />
+    <None Remove="Bots\YarnSpinner\**\*" />
+    <None Update="Bots\Yarn\**\*.yarn" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,6 +31,8 @@
     <PackageReference Include="MathParser.org-mXparser" />
     <PackageReference Include="Microsoft.Extensions.ObjectPool" />
     <PackageReference Include="Nito.AsyncEx" />
+    <PackageReference Include="YarnSpinner" />
+    <PackageReference Include="YarnSpinner.Compiler" />
   </ItemGroup>
 
   <ItemGroup>

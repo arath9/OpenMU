@@ -12,7 +12,7 @@ namespace MUnique.OpenMU.Persistence.EntityFramework.CompiledModels.ForAccountCo
     public partial class AccountContextModel
     {
         private AccountContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("7a84b3b3-fd04-4359-b130-08013b01bc5b"), entityTypeCount: 48)
+            : base(skipDetectChanges: false, modelId: new Guid("fe74a56c-aee1-44ed-9273-9d6dd6367618"), entityTypeCount: 51)
         {
         }
 
@@ -23,6 +23,9 @@ namespace MUnique.OpenMU.Persistence.EntityFramework.CompiledModels.ForAccountCo
             var accountExternalLink = AccountExternalLinkEntityType.Create(this);
             var appearanceData = AppearanceDataEntityType.Create(this);
             var attributeRelationship = AttributeRelationshipEntityType.Create(this);
+            var botEventLog = BotEventLogEntityType.Create(this);
+            var botReputationRecord = BotReputationRecordEntityType.Create(this);
+            var botSocialInteraction = BotSocialInteractionEntityType.Create(this);
             var cashShopCoinGrant = CashShopCoinGrantEntityType.Create(this);
             var cashShopStorageItem = CashShopStorageItemEntityType.Create(this);
             var castleSiegeData = CastleSiegeDataEntityType.Create(this);
@@ -103,6 +106,9 @@ namespace MUnique.OpenMU.Persistence.EntityFramework.CompiledModels.ForAccountCo
             AccountExternalLinkEntityType.CreateAnnotations(accountExternalLink);
             AppearanceDataEntityType.CreateAnnotations(appearanceData);
             AttributeRelationshipEntityType.CreateAnnotations(attributeRelationship);
+            BotEventLogEntityType.CreateAnnotations(botEventLog);
+            BotReputationRecordEntityType.CreateAnnotations(botReputationRecord);
+            BotSocialInteractionEntityType.CreateAnnotations(botSocialInteraction);
             CashShopCoinGrantEntityType.CreateAnnotations(cashShopCoinGrant);
             CashShopStorageItemEntityType.CreateAnnotations(cashShopStorageItem);
             CastleSiegeDataEntityType.CreateAnnotations(castleSiegeData);

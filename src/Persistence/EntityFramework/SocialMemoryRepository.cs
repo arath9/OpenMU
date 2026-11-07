@@ -16,15 +16,15 @@ using MUnique.OpenMU.Persistence.Contracts;
 /// </summary>
 public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
 {
-    private readonly EntityDataContext _context;
+    private readonly IDbContextFactory<EntityDataContext> _contextFactory;
     private readonly ILogger<SocialMemoryRepository>? _logger;
 
     /// <summary>
-    /// Inicializa el repository con contexto EF Core y logger opcional.
+    /// Inicializa el repository con una fábrica de contextos EF Core y logger opcional.
     /// </summary>
-    public SocialMemoryRepository(EntityDataContext context, ILogger<SocialMemoryRepository>? logger = null)
+    public SocialMemoryRepository(IDbContextFactory<EntityDataContext> contextFactory, ILogger<SocialMemoryRepository>? logger = null)
     {
-        this._context = context ?? throw new System.ArgumentNullException(nameof(context));
+        this._contextFactory = contextFactory ?? throw new System.ArgumentNullException(nameof(contextFactory));
         this._logger = logger;
     }
 
@@ -34,6 +34,7 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
         if (string.IsNullOrWhiteSpace(botName)) throw new System.ArgumentNullException(nameof(botName));
         if (string.IsNullOrWhiteSpace(targetName)) throw new System.ArgumentNullException(nameof(targetName));
 
+        using var dataContext = this._contextFactory.CreateDbContext();
         var interaction = new Model.BotSocialInteraction
         {
             ID = System.Guid.NewGuid(),
@@ -43,8 +44,8 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
             Timestamp = System.DateTime.UtcNow
         };
 
-        this._context.BotSocialInteractions.Add(interaction);
-        this._context.SaveChanges();
+        dataContext.BotSocialInteractions.Add(interaction);
+        dataContext.SaveChanges();
 
         this._logger?.LogInformation("Bot {BotName} interactuó con {TargetName}: {InteractionType}", 
             botName, targetName, interactionType);
@@ -56,7 +57,8 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
         if (string.IsNullOrWhiteSpace(botName)) throw new System.ArgumentNullException(nameof(botName));
         if (string.IsNullOrWhiteSpace(targetName)) throw new System.ArgumentNullException(nameof(targetName));
 
-        var record = this._context.BotReputationRecords
+        using var dataContext = this._contextFactory.CreateDbContext();
+        var record = dataContext.BotReputationRecords
             .FirstOrDefault(r => r.BotName == botName && r.TargetName == targetName);
 
         return record?.CurrentReputation ?? 0; // Default: neutral si no hay historial
@@ -69,7 +71,8 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
         if (string.IsNullOrWhiteSpace(targetName)) throw new System.ArgumentNullException(nameof(targetName));
 
         // Buscar o crear registro de reputación existente
-        var record = this._context.BotReputationRecords
+        using var dataContext = this._contextFactory.CreateDbContext();
+        var record = dataContext.BotReputationRecords
             .FirstOrDefault(r => r.BotName == botName && r.TargetName == targetName);
 
         if (record == null)
@@ -84,7 +87,7 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
                 LastUpdated = System.DateTime.UtcNow
             };
 
-            this._context.BotReputationRecords.Add(record);
+            dataContext.BotReputationRecords.Add(record);
         }
         else
         {
@@ -93,21 +96,30 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
             record.LastUpdated = System.DateTime.UtcNow;
         }
 
-        this._context.SaveChanges();
+        dataContext.SaveChanges();
 
         this._logger?.LogInformation("Bot {BotName} reputación hacia {TargetName}: +{Delta}, total: {Current}", 
             botName, targetName, reputationDelta, record.CurrentReputation);
     }
 
     /// <inheritdoc/>
-    public IEnumerable<Model.BotSocialInteraction> GetRecentInteractions(string botName, int limit = 50)
+    public IEnumerable<ISocialMemoryRepository.BotSocialInteraction> GetRecentInteractions(string botName, int limit = 50)
     {
         if (string.IsNullOrWhiteSpace(botName)) throw new System.ArgumentNullException(nameof(botName));
 
-        return this._context.BotSocialInteractions
+        using var dataContext = this._contextFactory.CreateDbContext();
+        return dataContext.BotSocialInteractions
             .Where(i => i.BotName == botName)
             .OrderByDescending(i => i.Timestamp)
             .Take(limit)
+            .Select(i => new ISocialMemoryRepository.BotSocialInteraction
+            {
+                ID = i.ID,
+                BotName = i.BotName,
+                TargetName = i.TargetName,
+                InteractionType = i.InteractionType,
+                Timestamp = i.Timestamp,
+            })
             .ToList();
     }
 
@@ -116,6 +128,7 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
     {
         if (string.IsNullOrWhiteSpace(botName)) throw new System.ArgumentNullException(nameof(botName));
 
+        using var dataContext = this._contextFactory.CreateDbContext();
         var logEntry = new Model.BotEventLog
         {
             ID = System.Guid.NewGuid(),
@@ -125,8 +138,8 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
             Timestamp = System.DateTime.UtcNow
         };
 
-        this._context.BotEventLogs.Add(logEntry);
-        this._context.SaveChanges();
+        dataContext.BotEventLogs.Add(logEntry);
+        dataContext.SaveChanges();
 
         this._logger?.LogInformation("Bot {BotName} evento: {EventType} - {Context}", 
             botName, eventType, context);
@@ -135,16 +148,17 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
     /// <inheritdoc/>
     public void CleanupOldInteractions(int daysThreshold = 7)
     {
+        using var dataContext = this._contextFactory.CreateDbContext();
         var cutoffDate = System.DateTime.UtcNow.AddDays(-daysThreshold);
 
-        var interactionsToDelete = this._context.BotSocialInteractions
+        var interactionsToDelete = dataContext.BotSocialInteractions
             .Where(i => i.Timestamp < cutoffDate)
             .ToList();
 
         if (interactionsToDelete.Any())
         {
-            this._context.BotSocialInteractions.RemoveRange(interactionsToDelete);
-            this._context.SaveChanges();
+            dataContext.BotSocialInteractions.RemoveRange(interactionsToDelete);
+            dataContext.SaveChanges();
 
             this._logger?.LogInformation("Limpiadas {Count} interacciones antiguas (> {Days} días)", 
                 interactionsToDelete.Count, daysThreshold);
@@ -154,7 +168,7 @@ public class SocialMemoryRepository : ISocialMemoryRepository, IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
-        // En implementación real: cerrar contextos, liberar recursos
+        // Each operation owns and disposes its context; the factory is owned by DI.
         this._logger?.LogInformation("SocialMemoryRepository cleanup completado");
     }
 }

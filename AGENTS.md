@@ -104,3 +104,23 @@ can be refactored opportunistically when you're already touching it.
 Some parts of the codebase knowingly violate the rules and say so in a comment
 (for example `ItemPriceCalculator`). Leave them alone unless fixing them is the
 task.
+
+## Reglas de trabajo para agentes (Hermes / Codex / Qwen) — proyecto protagonistas con LLM
+
+Aplican a todo cambio en `src/GameLogic/Bots/` y a cualquier tarea de los planes en `../docs/PLAN_*.md`.
+
+1. **Un paso por vez.** No empieces el siguiente hasta que el anterior compile.
+2. **Alcance cerrado.** Tocá solo los archivos que nombra la tarea. Nunca toques `../OpenMu-Client-Babylon/index.html`, `serverlist.md`, `deploy/**/docker-compose*.yml` ni el cliente Babylon salvo que la tarea lo pida explícitamente.
+3. **No reformatees.** No cambies estilo de namespace, indentación ni orden de usings de archivos existentes. Diff mínimo.
+4. **Compilar después de cada paso:** `dotnet build src/GameLogic/MUnique.OpenMU.GameLogic.csproj` → 0 errores. Si hay tests de la tarea: `dotnet test tests/MUnique.OpenMU.Tests --filter <Nombre>`.
+5. **Commit después de cada paso que compile:** `git add -A src/GameLogic/Bots tests && git commit -m "<fase>: paso N"`. Así siempre se puede volver atrás.
+6. **Si algo no compila o no funciona y no sabés por qué: pará y reportá** el error exacto y las líneas de `docker logs gameServer0`. No "arregles" tocando archivos fuera del alcance.
+7. **"Al principio de X" / "reemplazá exactamente X" es literal.** Ubicación del código importa (ej.: el bloque LLM de `ReactToChatAsync` va antes del filtro de Yarn).
+8. **No inventes APIs.** Si un método o propiedad no existe, buscalo con grep; si no está, reportá.
+9. **Arquitectura a respetar:**
+   - El LLM nunca bloquea el tick del bot: la llamada HTTP va en `Task.Run` y el resultado vuelve por `PendingBotActions`.
+   - El LLM propone, el código decide: toda acción entra por `BotProtagonist.StartAction`, que valida.
+   - Logs con `ILogger` (`this.Logger`, `GameContext.LoggerFactory`), no `Console`/`Debug.WriteLine`.
+   - Mensajes al chat siempre por `ChatText.Clean` + `ChatText.Split` (límite del paquete C1).
+10. **Desplegar:** `docker compose -f deploy/distributed/docker-compose.yml build gameServer0 && docker compose -f deploy/distributed/docker-compose.yml up -d gameServer0`. Nunca `docker cp` de DLLs.
+11. **Revisión:** al terminar una fase, Codex revisa el diff (`git diff <commit-inicio>..HEAD -- src/GameLogic/Bots`) contra el plan antes de dar la fase por cerrada.

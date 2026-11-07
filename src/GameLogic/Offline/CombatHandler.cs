@@ -492,6 +492,22 @@ public sealed class CombatHandler
         this._tickBestSkill = null;
         this._tickBestSkillComputed = false;
 
+        // Scripted targets use the same range, movement, skills and final legality checks as all bots.
+        if (this._player is BotProtagonist protagonist)
+        {
+            if (protagonist.ScriptedTarget is { } scripted && protagonist.CanAttack(scripted))
+            {
+                this._currentTarget = scripted;
+                return;
+            }
+
+            // Never retain a scripted victim after an event, betrayal or rage has expired.
+            if (this._currentTarget is Player)
+            {
+                this._currentTarget = null;
+            }
+        }
+
         // Self-defense has priority over farming: a player who recently attacked this bot becomes the
         // target, as long as they are still viable and anywhere near. Without this the bot placidly
         // keeps hitting monsters while a player kills it. The aggressor memory only sets the PRIORITY,

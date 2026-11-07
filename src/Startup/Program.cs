@@ -324,6 +324,8 @@ internal sealed class Program : IDisposable
             builder.AddAdminPanel(includeMapApp: true);
         }
 
+        builder.Services.AddSocialMemoryRepository();
+
         builder.Services.AddSingleton(this._servers)
             .AddSingleton<IConfigurationChangePublisher, ConfigurationChangeHandler>()
             .AddSingleton<IConfigurationChangeListener, ConfigurationChangeListener>()

@@ -12,7 +12,7 @@ namespace MUnique.OpenMU.Persistence.EntityFramework.CompiledModels.ForEntityDat
     public partial class EntityDataContextModel
     {
         private EntityDataContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("3c3d6acf-c70b-44c8-b4f1-cf06d8de08b8"), entityTypeCount: 123)
+            : base(skipDetectChanges: false, modelId: new Guid("424c5756-42d1-4172-a69a-d60c9ea6f6fb"), entityTypeCount: 126)
         {
         }
 
@@ -27,6 +27,9 @@ namespace MUnique.OpenMU.Persistence.EntityFramework.CompiledModels.ForEntityDat
             var attributeRelationship = AttributeRelationshipEntityType.Create(this);
             var attributeRequirement = AttributeRequirementEntityType.Create(this);
             var battleZoneDefinition = BattleZoneDefinitionEntityType.Create(this);
+            var botEventLog = BotEventLogEntityType.Create(this);
+            var botReputationRecord = BotReputationRecordEntityType.Create(this);
+            var botSocialInteraction = BotSocialInteractionEntityType.Create(this);
             var buff = BuffEntityType.Create(this);
             var cashShopCoinGrant = CashShopCoinGrantEntityType.Create(this);
             var cashShopConfiguration = CashShopConfigurationEntityType.Create(this);
@@ -393,6 +396,9 @@ namespace MUnique.OpenMU.Persistence.EntityFramework.CompiledModels.ForEntityDat
             AttributeRelationshipEntityType.CreateAnnotations(attributeRelationship);
             AttributeRequirementEntityType.CreateAnnotations(attributeRequirement);
             BattleZoneDefinitionEntityType.CreateAnnotations(battleZoneDefinition);
+            BotEventLogEntityType.CreateAnnotations(botEventLog);
+            BotReputationRecordEntityType.CreateAnnotations(botReputationRecord);
+            BotSocialInteractionEntityType.CreateAnnotations(botSocialInteraction);
             BuffEntityType.CreateAnnotations(buff);
             CashShopCoinGrantEntityType.CreateAnnotations(cashShopCoinGrant);
             CashShopConfigurationEntityType.CreateAnnotations(cashShopConfiguration);
