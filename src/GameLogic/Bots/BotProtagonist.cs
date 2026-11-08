@@ -90,8 +90,8 @@ public abstract class BotProtagonist : BotPlayer
     // Próxima interacción de chat
     private DateTimeOffset _nextChat;
 
-    // Índice para patrulla
-    private int _patrolIndex;
+    /// <summary>Índice para patrulla.</summary>
+    protected internal int _patrolIndex;
 
     // Configuración de diálogo para LLM/Natural language
     protected BotDialogueConfig _dialogueConfig = new();
@@ -130,16 +130,22 @@ public abstract class BotProtagonist : BotPlayer
             this.Logger.LogDebug("Percepcion {Bot}: {Kind} {Who}", this.Name, evt.Kind, evt.Who?.Name);
         }
 
-        // PASO 2: Ejecutor de actividad autónoma (elegir random para probar)
-        if (now >= this._activityUntil && Random.Shared.NextDouble() < 0.3)
+        // Tarea 3: Planificador LLM - decidir qué actividad hacer
+        if (now >= this._activityUntil)
         {
-            var activity = (NpcActivityKind)Random.Shared.Next(1, 7); // GuardGate..ChallengeRival
+            var intent = await this.PlanAutonomousActivityAsync(now).ConfigureAwait(false);
             
-            this.Logger.LogInformation("Mandolion elige actividad random: {Activity}", activity);
-            
-            this._currentActivity = activity;
-            this._activityUntil = now.AddMinutes(ActivityDurationCalculator.CalculateMinutes(activity));
+            if (intent is not null && intent.Activity != NpcActivityKind.None)
+            {
+                this.Logger.LogInformation("Mandolion planea {Activity} porque {Reason}", intent.Activity, intent.Reason);
+                
+                this._currentActivity = intent.Activity;
+                this._activityUntil = now.AddMinutes(ActivityDurationCalculator.CalculateMinutes(intent.Activity));
+            }
         }
+
+        // Ejecutar actividad actual (movimiento a waypoints) - Tarea 2
+        await this.ExecuteActivityAsync(now).ConfigureAwait(false);
 
         var aggressor = this.RecentAggressor;
         if (aggressor is not null && aggressor is not OfflinePlayer && !ReferenceEquals(aggressor, this._lastPerceivedAggressor)
@@ -836,29 +842,122 @@ public abstract class BotProtagonist : BotPlayer
         }
     }
 
-    /// <summary>Patrol the waypoints defined in Settings.Patrol.</summary>
-    protected void Patrol(DateTimeOffset now)
+    /// <summary>Ejecuta la actividad autónoma actual moviendo al bot a waypoints.</summary>
+    private async ValueTask ExecuteActivityAsync(DateTimeOffset now)
     {
-        var patrol = this.Settings.Patrol;
-        if (patrol.Length == 0)
+        if (this._currentActivity == NpcActivityKind.None || now < this._activityUntil)
         {
-            return;
+            return; // No hay actividad activa o aún no ha comenzado
         }
 
-        // Circular index for patrol waypoints
-        var waypointIndex = _patrolIndex % patrol.Length;
-        var waypoint = patrol[waypointIndex];
-
-        if (this.CurrentMap is { } map && map.Definition.Number == waypoint.Map)
+        var activity = this._currentActivity;
+        
+        switch (activity)
         {
-            var distanceToWaypoint = System.Math.Sqrt(System.Math.Pow(this.Position.X - waypoint.X, 2) + System.Math.Pow(this.Position.Y - waypoint.Y, 2));
-            if (distanceToWaypoint < 5) // Close enough to the waypoint, move to next.
-            {
-                _patrolIndex++;
-                return;
-            }
+            case NpcActivityKind.GuardGate:
+                if (this.CurrentMap?.Definition.Number == 0 && !this.IsInRange(130, 178, 4))
+                {
+                    this.Destination = new ProtagonistWaypoint(0, 130, 178);
+                    this.Logger.LogInformation("Bot {Name} moviéndose hacia puerta norte Lorencia (130,178)", this.Name);
+                }
+                else if (this.CurrentMap?.Definition.Number == 0 && this.IsInRange(130, 178, 4))
+                {
+                    this.Logger.LogInformation("Bot {Name} guardando puerta norte Lorencia", this.Name);
+                }
+                break;
 
-            this.Destination = new(waypoint.Map, waypoint.X, waypoint.Y);
+            case NpcActivityKind.Patrol:
+                if (this.Settings.Patrol is { } patrol && patrol.Length > 0)
+                {
+                    var waypoint = this.Settings.Patrol[this._patrolIndex % patrol.Length];
+                    this.Destination = waypoint;
+                    
+                    if (this.IsInRange(waypoint.X, waypoint.Y, 4))
+                    {
+                        this._patrolIndex++;
+                    }
+                    
+                    this.Logger.LogInformation("Bot {Name} patrullando a {Waypoint}", this.Name, waypoint);
+                }
+                break;
+
+            case NpcActivityKind.Hunt:
+                var huntMap = Random.Shared.NextDouble() < 0.5 ? 2 : 3;
+                if (this.CurrentMap?.Definition.Number != huntMap && this.CurrentMap is not null)
+                {
+                    this.Logger.LogInformation("Bot {Name} yendo a mapa de caza {Map}", this.Name, huntMap);
+                }
+                else if (this.CurrentMap?.Definition.Number == huntMap)
+                {
+                    this.Logger.LogInformation("Bot {Name} cazando en {Map}", this.Name, huntMap);
+                }
+                break;
+
+            case NpcActivityKind.Rest:
+                if (this.CurrentMap?.Definition.Number == 0 && !this.IsInRange(130, 130, 4))
+                {
+                    this.Destination = new ProtagonistWaypoint(0, 130, 130);
+                    this.Logger.LogInformation("Bot {Name} yendo a Lorencia (130,130) para descansar", this.Name);
+                }
+                else if (this.CurrentMap?.Definition.Number == 0 && this.IsInRange(130, 130, 4))
+                {
+                    this.Logger.LogInformation("Bot {Name} descansando en Lorencia (130,130)", this.Name);
+                }
+                break;
+
+            case NpcActivityKind.SeekPlayer:
+                this.Logger.LogInformation("Bot {Name} buscando jugador", this.Name);
+                break;
+
+            case NpcActivityKind.ChallengeRival:
+                this.Logger.LogInformation("Bot {Name} buscando rival para desafío", this.Name);
+                break;
+
+            default:
+                this.Logger.LogWarning("Actividad desconocida: {Activity}", activity);
+                break;
         }
     }
+
+    /// <summary>Planifica actividad autónoma llamando al LLM para decidir qué hacer.</summary>
+    private async ValueTask<NpcActivityIntent?> PlanAutonomousActivityAsync(DateTimeOffset now)
+    {
+        var perception = this._perception.RecentEvents;
+        
+        // Construir prompt para el planificador de actividades
+        var systemPrompt = 
+            $"Sos {this.Name}, un personaje de MU Online. Nunca salís del personaje ni decís que sos una IA.\n\n" +
+            "TUS OBJETIVOS:\n" +
+            "- Elegir una actividad autónoma basada en tu estado actual, energía y situación.\n" +
+            "- Las actividades disponibles son: GuardGate (vigilar puerta Lorencia norte), Patrol (patrullar waypoints), Hunt (cazar monstruos en Devias/Noria), Rest (descansar en Lorencia centro), SeekPlayer (buscar jugador específico), ChallengeRival (desafiar a BertoSala).\n" +
+            "ESTADO ACTUAL:\n" +
+            $"- Estás en {this.CurrentMap?.Definition.Name.ValueInNeutralLanguage ?? "desconocido"}. Posición: ({this.Position.X}, {this.Position.Y}).\n" +
+            $"- Energía: {this.Energy}/100. Estado de ánimo: {this.CurrentMood} (score: {this.MoodScore}).\n" +
+            $"- Actividad actual: {_currentActivity}. Termina a las {_activityUntil:HH:mm:ss}.\n" +
+            $"- Eventos recientes: {string.Join(", ", perception.Select(e => e.Kind))}.\n\n" +
+            "INSTRUCCIONES:\n" +
+            "- Si estás agotado (energía < 20), elige Rest para descansar.\n" +
+            "- Si hay jugadores cerca y te sientes agresivo/curioso, puedes elegir Hunt o GuardGate.\n" +
+            "- Si tienes energía alta (>80) y buen ánimo, considera Patrol o Hunt.\n" +
+            "- Elige una actividad y explica brevemente por qué en 'reason'.\n\n" +
+            "RESPONDÉ solo JSON: {\"activity\": \"GuardGate|Patrol|Hunt|Rest|SeekPlayer|ChallengeRival\", \"reason\": \"explicación breve\"}. Si no quieres hacer nada, usa activity=\"None\".";
+
+        try
+        {
+            var intent = await this._llmIntegration!.ReplyIntentAsync(this.Name, this.Name, systemPrompt, "Decidí qué actividad autónoma hacer ahora.").ConfigureAwait(false);
+            
+            if (intent is not null && Enum.TryParse<NpcActivityKind>(intent.Action.ToString(), true, out var activity))
+            {
+                return new NpcActivityIntent(activity, intent.Say ?? "sin razón específica");
+            }
+        }
+        catch (Exception ex)
+        {
+            this.Logger.LogError(ex, "Fallo al planificar actividad autónoma con LLM para {Bot}", this.Name);
+        }
+
+        // Fallback: elegir random si el LLM falla
+        return new NpcActivityIntent(NpcActivityKind.None, "fallo del LLM, usando fallback");
+    }
+
 }

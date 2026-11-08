@@ -28,11 +28,28 @@ public sealed class BotProtagonist_elmandolion : BotProtagonist
     protected override async ValueTask ThinkAsync(DateTimeOffset now)
     {
         if (this.World.IsHunting)
-        {
-            this.Patrol(now);
-            if (this.Settings.AllowPlayerHunting)
-            {
-                this.Engage(this.NearbyHumans().FirstOrDefault(p => !p.IsAtSafezone()));
+                {
+                    // Patrullar waypoints definidos en Settings.Patrol
+                    if (this.Settings.Patrol is { } patrol && patrol.Length > 0)
+                    {
+                        var waypointIndex = this._patrolIndex % patrol.Length;
+                        var waypoint = patrol[waypointIndex];
+
+                        if (this.CurrentMap is { } map && map.Definition.Number == waypoint.Map)
+                        {
+                            var distanceToWaypoint = System.Math.Sqrt(System.Math.Pow(this.Position.X - waypoint.X, 2) + System.Math.Pow(this.Position.Y - waypoint.Y, 2));
+                            if (distanceToWaypoint < 5)
+                            {
+                                this._patrolIndex++;
+                            }
+
+                            this.Destination = new(waypoint.Map, waypoint.X, waypoint.Y);
+                        }
+                    }
+
+                    if (this.Settings.AllowPlayerHunting)
+                    {
+                        this.Engage(this.NearbyHumans().FirstOrDefault(p => !p.IsAtSafezone()));
             }
 
             if (this.AutonomousThinkingEnabled)
