@@ -29,7 +29,10 @@ public class LocalLLMClient : IDisposable
         public string ModelName { get; set; } = "qwen/qwen3.5-35b-a3b";
         public int MaxTokens { get; set; } = 500;
         public float Temperature { get; set; } = 0.7f;
-        public int TimeoutSeconds { get; set; } = 30;
+        /// <summary>Timeout inicial en segundos (PASO 1: 45s).</summary>
+        public int TimeoutSeconds { get; set; } = 45;
+        /// <summary>Retraso entre reintento (5 s).</summary>
+        public int RetryDelaySeconds { get; set; } = 5;
     }
 
     private readonly LLMConfig _config;
@@ -54,93 +57,136 @@ public class LocalLLMClient : IDisposable
         string playerMessage,
         string? context = null)
     {
-        try
+        var lastException = default(Exception);
+        
+        // PASO 1: Reintento automático si LM Studio está "unloaded" o timeout inicial
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            var systemPrompt = BuildSystemPrompt(botName, personalityDescription);
-            var userMessage = $"Jugador: {playerMessage}";
-
-            if (!string.IsNullOrEmpty(context))
+            try
             {
-                context = "Contexto del juego. " + context;
-            }
+                var systemPrompt = BuildSystemPrompt(botName, personalityDescription);
+                var userMessage = $"Jugador: {playerMessage}";
 
-            var messagesArray = new[]
-            {
-                new ChatMessageDto { Role = "system", Content = systemPrompt },
-                new ChatMessageDto { Role = "user", Content = (context ?? "") + userMessage }
-            };
-
-            var request = new LLMRequest
-            {
-                Model = _modelName,
-                Messages = messagesArray,
-                MaxTokens = _maxTokens,
-                Temperature = _config.Temperature,
-                Stream = false,
-                ChatTemplateKwargs = new Dictionary<string, object> 
-                { 
-                    ["enable_thinking"] = false
+                if (!string.IsNullOrEmpty(context))
+                {
+                    context = "Contexto del juego. " + context;
                 }
-            };
 
-            var jsonPayload = JsonSerializer.Serialize(request, JsonOptions);
-            
-            _logger.LogInformation("Generando respuesta LLM para '{BotName}' con mensaje: '{PlayerMessage}'", botName, playerMessage);
-            
-            using var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
-            
-            var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content);
-            
-            var responseBody = await response.Content.ReadAsStringAsync();
+                var messagesArray = new[]
+                {
+                    new ChatMessageDto { Role = "system", Content = systemPrompt },
+                    new ChatMessageDto { Role = "user", Content = (context ?? "") + userMessage }
+                };
 
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("LM Studio error HTTP ({Status}): {Body}", response.StatusCode, responseBody);
-                DialogLogger.Error($"Error generando respuesta: LM Studio no respondió correctamente");
-                return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
+                var request = new LLMRequest
+                {
+                    Model = _modelName,
+                    Messages = messagesArray,
+                    MaxTokens = _maxTokens,
+                    Temperature = _config.Temperature,
+                    Stream = false,
+                    ChatTemplateKwargs = new Dictionary<string, object> 
+                    { 
+                        ["enable_thinking"] = false
+                    }
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(request, JsonOptions);
+                
+                if (attempt > 0)
+                {
+                    _logger.LogWarning("Reintento LLM para '{BotName}' después de 5s", botName);
+                }
+                
+                using var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+                
+                var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content);
+                
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    // Verificar si es error de modelo "unloaded/loading" → reintento
+                    var bodyLower = responseBody.ToLowerInvariant();
+                    if (bodyLower.Contains("unloaded") || bodyLower.Contains("loading"))
+                    {
+                        _logger.LogWarning("LM Studio está descargando en intento {Attempt}", attempt + 1);
+                        if (attempt < 1)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+                            continue; // Reintentar
+                        }
+                    }
+                    
+                    _logger.LogWarning("LM Studio error HTTP ({Status}): {Body}", response.StatusCode, responseBody);
+                    DialogLogger.Error($"Error generando respuesta: LM Studio no respondió correctamente");
+                    return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
+                }
+
+                var result = JsonSerializer.Deserialize<LLMResponseDto>(responseBody, JsonOptions);
+
+                if (result?.Choices == null || result.Choices.Length == 0)
+                {
+                    _logger.LogWarning("LM Studio respondió sin choices: {Body}", responseBody);
+                    DialogLogger.Error($"Error generando respuesta: Sin respuestas de LM Studio");
+                    return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
+                }
+
+                var choice = result.Choices[0];
+                
+                if (choice.FinishReason == "length")
+                {
+                    _logger.LogWarning("LM Studio cortó respuesta por length - aumentar max_tokens");
+                }
+
+                var botResponse = SanitizeAndStripReasoning(choice.Message.Content);
+
+                if (string.IsNullOrEmpty(botResponse))
+                {
+                    _logger.LogWarning("Bot '{BotName}' respuesta vacia después de sanitizar", botName);
+                    DialogLogger.Error($"Error generando respuesta: Respuesta vacía");
+                    return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
+                }
+
+                if (botResponse.Length < 5)
+                {
+                    _logger.LogWarning("Bot '{BotName}' respuesta muy corta", botName);
+                    DialogLogger.Error($"Error generando respuesta: Respuesta muy corta");
+                    return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
+                }
+
+                _logger.LogInformation("Respuesta LLM generada exitosamente para '{BotName}'", botName);
+                
+                return botResponse;
             }
-
-            var result = JsonSerializer.Deserialize<LLMResponseDto>(responseBody, JsonOptions);
-
-            if (result?.Choices == null || result.Choices.Length == 0)
+            catch (TaskCanceledException) when (attempt < 1)
             {
-                _logger.LogWarning("LM Studio respondió sin choices: {Body}", responseBody);
-                DialogLogger.Error($"Error generando respuesta: Sin respuestas de LM Studio");
-                return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
+                // Timeout inicial, reintentar
+                lastException = new Exception($"Timeout en intento {attempt + 1}");
+                _logger.LogWarning("LM Studio timeout en intento {Attempt}, reintentando...", attempt + 1);
+                await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
             }
-
-            var choice = result.Choices[0];
-            
-            if (choice.FinishReason == "length")
+            catch (Exception ex)
             {
-                _logger.LogWarning("LM Studio cortó respuesta por length - aumentar max_tokens");
+                lastException = ex;
+                _logger.LogError(ex, "Error LLM para '{BotName}' en intento {Attempt}", botName, attempt + 1);
+                
+                // Solo reintentar si es error de conexión/red
+                if (ex is HttpRequestException && attempt < 1)
+                {
+                    _logger.LogWarning("Reintentando después de error HTTP...");
+                    await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+                    continue;
+                }
+                
+                // Si no es reintentable, salir
+                break;
             }
-
-            var botResponse = SanitizeAndStripReasoning(choice.Message.Content);
-
-            if (string.IsNullOrEmpty(botResponse))
-            {
-                _logger.LogWarning("Bot '{BotName}' respuesta vacia después de sanitizar", botName);
-                DialogLogger.Error($"Error generando respuesta: Respuesta vacía");
-                return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
-            }
-
-            if (botResponse.Length < 5)
-            {
-                _logger.LogWarning("Bot '{BotName}' respuesta muy corta", botName);
-                DialogLogger.Error($"Error generando respuesta: Respuesta muy corta");
-                return "Che, mis pensamientos estan desordenados. Intenta de nuevo.";
-            }
-
-            _logger.LogInformation("Respuesta LLM generada exitosamente para '{BotName}'", botName);
-            
-            return botResponse;
         }
-        catch (Exception ex)
-        {
-            DialogLogger.Error($"Error generando respuesta: {ex.Message}");
-            return null;
-        }
+
+        // Ningún intento funcionó
+        DialogLogger.Error($"Error generando respuesta: {lastException?.Message}");
+        return null;
     }
 
     private string BuildSystemPrompt(string botName, string personalityDescription)
