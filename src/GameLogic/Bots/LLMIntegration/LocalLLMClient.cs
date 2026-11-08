@@ -390,44 +390,83 @@ public class LocalLLMClient : IDisposable
     /// <summary>Manda system prompt + historial y devuelve la respuesta limpia, o null si falla.</summary>
     public async Task<string?> ChatAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, CancellationToken cancellationToken = default)
     {
-        try
+        var lastException = default(Exception);
+        
+        // PASO 1 (corregido): Reintento automático si LM Studio está "unloaded"/"loading" o timeout
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            var messages = new List<ChatMessageDto> { new() { Role = "system", Content = systemPrompt } };
-            messages.AddRange(turns.Select(t => new ChatMessageDto { Role = t.Role, Content = t.Content }));
-
-            var request = new LLMRequest
+            try
             {
-                Model = _modelName,
-                Messages = messages.ToArray(),
-                MaxTokens = _maxTokens,
-                Temperature = _config.Temperature,
-                Stream = false,
-                ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
-            };
+                var messages = new List<ChatMessageDto> { new() { Role = "system", Content = systemPrompt } };
+                messages.AddRange(turns.Select(t => new ChatMessageDto { Role = t.Role, Content = t.Content }));
 
-            var json = JsonSerializer.Serialize(request, JsonOptions);
-            using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-            using var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                var request = new LLMRequest
+                {
+                    Model = _modelName,
+                    Messages = messages.ToArray(),
+                    MaxTokens = _maxTokens,
+                    Temperature = _config.Temperature,
+                    Stream = false,
+                    ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
+                };
 
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("LM Studio HTTP {Status}: {Body}", response.StatusCode, body);
-                return null;
+                var json = JsonSerializer.Serialize(request, JsonOptions);
+                using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    // Verificar si es error de modelo "unloaded/loading" → reintento
+                    var bodyLower = body.ToLowerInvariant();
+                    if (bodyLower.Contains("unloaded") || bodyLower.Contains("loading"))
+                    {
+                        _logger.LogWarning("LM Studio está descargando en intento {Attempt}", attempt + 1);
+                        if (attempt < 1)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+                            continue; // Reintentar
+                        }
+                    }
+
+                    _logger.LogWarning("LM Studio HTTP {Status}: {Body}", response.StatusCode, body);
+                    return null;
+                }
+
+                var result = JsonSerializer.Deserialize<LLMResponseDto>(body, JsonOptions);
+                var raw = result?.Choices.FirstOrDefault()?.Message.Content;
+                var clean = ChatText.Clean(raw, botName);
+                _logger.LogInformation("LLM {Bot} <- '{Last}' -> '{Reply}'", botName, turns.LastOrDefault()?.Content, clean);
+                return string.IsNullOrWhiteSpace(clean) ? null : clean;
             }
+            catch (TaskCanceledException) when (attempt < 1)
+            {
+                // Timeout inicial, reintentar
+                lastException = new Exception($"Timeout en intento {attempt + 1}");
+                _logger.LogWarning("LM Studio timeout en intento {Attempt}, reintentando...", attempt + 1);
+                await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                _logger.LogError(ex, "LLM fallo para '{BotName}' en intento {Attempt}", botName, attempt + 1);
 
-            var result = JsonSerializer.Deserialize<LLMResponseDto>(body, JsonOptions);
-            var raw = result?.Choices.FirstOrDefault()?.Message.Content;
-            var clean = ChatText.Clean(raw, botName);
-            _logger.LogInformation("LLM {Bot} <- '{Last}' -> '{Reply}'", botName, turns.LastOrDefault()?.Content, clean);
-            return string.IsNullOrWhiteSpace(clean) ? null : clean;
+                // Solo reintentar si es error de conexión/red
+                if (ex is HttpRequestException && attempt < 1)
+                {
+                    _logger.LogWarning("Reintentando después de error HTTP...");
+                    await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+                    continue;
+                }
+
+                // Si no es reintentable, salir
+                break;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "LLM fallo para {Bot}", botName);
-            DialogLogger.Error($"Error en ChatAsync: {ex.Message}");
-            return null;
-        }
+
+        // Ningún intento funcionó
+        _logger.LogError(lastException, "LLM fallo para {BotName} después de reintento", botName);
+        return null;
     }
 
     /// <summary>Cómo ChatAsync, pero el modelo responde JSON {say, action, place}. Null si falla.</summary>
@@ -443,69 +482,108 @@ public class LocalLLMClient : IDisposable
     /// <returns>The proposed intent, or null on failure.</returns>
     public async Task<NpcIntent?> ChatIntentAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, IReadOnlyList<string>? targets, CancellationToken cancellationToken = default)
     {
-        try
+        var lastException = default(Exception);
+        
+        // PASO 1 (corregido): Reintento automático si LM Studio está "unloaded"/"loading" o timeout
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            var messages = new List<ChatMessageDto> { new() { Role = "system", Content = systemPrompt } };
-            messages.AddRange(turns.Select(t => new ChatMessageDto { Role = t.Role, Content = t.Content }));
-
-            var request = new LLMRequest
-            {
-                Model = _modelName,
-                Messages = messages.ToArray(),
-                MaxTokens = _maxTokens,
-                Temperature = _config.Temperature,
-                Stream = false,
-                ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
-                ResponseFormat = CreateIntentSchema(targets),
-            };
-
-            var json = JsonSerializer.Serialize(request, JsonOptions);
-            using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-            using var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken).ConfigureAwait(false);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("LM Studio HTTP {Status}: {Body}", response.StatusCode, body);
-                return null;
-            }
-
-            var result = JsonSerializer.Deserialize<LLMResponseDto>(body, JsonOptions);
-            var raw = result?.Choices.FirstOrDefault()?.Message.Content;
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                return null;
-            }
-
-            raw = System.Text.RegularExpressions.Regex.Replace(raw, @"</think>", "", System.Text.RegularExpressions.RegexOptions.Singleline).Trim();
-
-            NpcIntent intent;
             try
             {
-                using var doc = JsonDocument.Parse(raw);
-                var root = doc.RootElement;
-                var say = root.TryGetProperty("say", out var s) ? s.GetString() : null;
-                var actionText = root.TryGetProperty("action", out var a) ? a.GetString() : null;
-                var place = root.TryGetProperty("place", out var p) ? p.GetString() : null;
-                var action = Enum.TryParse<NpcActionKind>(actionText, true, out var parsed) ? parsed : NpcActionKind.None;
-                var target = root.TryGetProperty("target", out var t) ? t.GetString() : null;
-                intent = new NpcIntent(ChatText.Clean(say, botName), action, place) { Target = target ?? string.Empty };
-            }
-            catch (JsonException)
-            {
-                // El modelo no respetó el JSON: usar todo como texto y no hacer nada.
-                intent = new NpcIntent(ChatText.Clean(raw, botName), NpcActionKind.None, null);
-            }
+                var messages = new List<ChatMessageDto> { new() { Role = "system", Content = systemPrompt } };
+                messages.AddRange(turns.Select(t => new ChatMessageDto { Role = t.Role, Content = t.Content }));
 
-            _logger.LogInformation("LLM {Bot} <- '{Last}' -> say='{Say}' action={Action} place={Place}", botName, turns.LastOrDefault()?.Content, intent.Say, intent.Action, intent.Place);
-            return intent;
+                var request = new LLMRequest
+                {
+                    Model = _modelName,
+                    Messages = messages.ToArray(),
+                    MaxTokens = _maxTokens,
+                    Temperature = _config.Temperature,
+                    Stream = false,
+                    ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
+                    ResponseFormat = CreateIntentSchema(targets),
+                };
+
+                var json = JsonSerializer.Serialize(request, JsonOptions);
+                using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    // Verificar si es error de modelo "unloaded/loading" → reintento
+                    var bodyLower = body.ToLowerInvariant();
+                    if (bodyLower.Contains("unloaded") || bodyLower.Contains("loading"))
+                    {
+                        _logger.LogWarning("LM Studio está descargando en intento {Attempt}", attempt + 1);
+                        if (attempt < 1)
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+                            continue; // Reintentar
+                        }
+                    }
+                    
+                    _logger.LogWarning("LM Studio HTTP {Status}: {Body}", response.StatusCode, body);
+                    return null;
+                }
+
+                var result = JsonSerializer.Deserialize<LLMResponseDto>(body, JsonOptions);
+                var raw = result?.Choices.FirstOrDefault()?.Message.Content;
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    return null;
+                }
+
+                raw = System.Text.RegularExpressions.Regex.Replace(raw, @"</think>", "", System.Text.RegularExpressions.RegexOptions.Singleline).Trim();
+
+                NpcIntent intent;
+                try
+                {
+                    using var doc = JsonDocument.Parse(raw);
+                    var root = doc.RootElement;
+                    var say = root.TryGetProperty("say", out var s) ? s.GetString() : null;
+                    var actionText = root.TryGetProperty("action", out var a) ? a.GetString() : null;
+                    var place = root.TryGetProperty("place", out var p) ? p.GetString() : null;
+                    var action = Enum.TryParse<NpcActionKind>(actionText, true, out var parsed) ? parsed : NpcActionKind.None;
+                    var target = root.TryGetProperty("target", out var t) ? t.GetString() : null;
+                    intent = new NpcIntent(ChatText.Clean(say, botName), action, place) { Target = target ?? string.Empty };
+                }
+                catch (JsonException)
+                {
+                    // El modelo no respetó el JSON: usar todo como texto y no hacer nada.
+                    intent = new NpcIntent(ChatText.Clean(raw, botName), NpcActionKind.None, null);
+                }
+
+                _logger.LogInformation("LLM {Bot} <- '{Last}' -> say='{Say}' action={Action} place={Place}", botName, turns.LastOrDefault()?.Content, intent.Say, intent.Action, intent.Place);
+                return intent;
+            }
+            catch (TaskCanceledException) when (attempt < 1)
+            {
+                // Timeout inicial, reintentar
+                lastException = new Exception($"Timeout en intento {attempt + 1}");
+                _logger.LogWarning("LM Studio timeout en intento {Attempt}, reintentando...", attempt + 1);
+                await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                _logger.LogError(ex, "LLM fallo para '{BotName}' en intento {Attempt}", botName, attempt + 1);
+                
+                // Solo reintentar si es error de conexión/red
+                if (ex is HttpRequestException && attempt < 1)
+                {
+                    _logger.LogWarning("Reintentando después de error HTTP...");
+                    await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds));
+                    continue;
+                }
+                
+                // Si no es reintentable, salir
+                break;
+            }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "LLM fallo para {Bot}", botName);
-            DialogLogger.Error($"Error en ChatIntentAsync: {ex.Message}");
-            return null;
-        }
+
+        // Ningún intento funcionó
+        _logger.LogError(lastException, "LLM fallo para {BotName} después de reintento", botName);
+        return null;
     }
 
     internal static class DialogLogger
