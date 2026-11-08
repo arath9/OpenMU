@@ -393,9 +393,15 @@ public abstract class BotProtagonist : BotPlayer
                     }
 
                     // Primero habla, después actúa. StartAction valida todo.
-                    if (intent.Action != NpcActionKind.None)
+                    var action = CorrectChatAction(intent.Action, message);
+                    if (action != intent.Action)
                     {
-                        this.StartAction(intent.Action, sender, place);
+                        this.Logger.LogInformation("Accion corregida {Bot}: {From} -> {To} (no nombró un lugar)", this.Name, intent.Action, action);
+                    }
+
+                    if (action != NpcActionKind.None)
+                    {
+                        this.StartAction(action, sender, action == NpcActionKind.Guide ? place : null);
                     }
                 });
             }
@@ -568,6 +574,16 @@ public abstract class BotProtagonist : BotPlayer
                         foreach (var line in lines)
                         {
                             await this.SayAsync(line, force: true).ConfigureAwait(false);
+                        }
+
+                        if (lines.Count > 0)
+                        {
+                            // Les habló a los de cerca: pueden contestarle sin nombrarlo durante 60 s.
+                            // (3 s en el pasado para que la respuesta inmediata no caiga en el antispam de 2 s.)
+                            foreach (var human in this.NearbyHumans())
+                            {
+                                this._lastTalk[human] = DateTimeOffset.UtcNow.AddSeconds(-3);
+                            }
                         }
 
                         this._lastAutonomousDecision = DateTimeOffset.UtcNow;
@@ -812,6 +828,25 @@ public abstract class BotProtagonist : BotPlayer
         _ => this._currentActivity == NpcActivityKind.None ? "sin hacer nada en particular" : DescribeActivity(this._currentActivity),
     };
 
+    /// <summary>
+    /// Red de seguridad sobre la acción que eligió el modelo: "guide" sin un lugar nombrado por el
+    /// jugador es casi siempre un "vení" mal entendido, así que se convierte en "follow".
+    /// </summary>
+    /// <param name="action">La acción que eligió el modelo.</param>
+    /// <param name="playerMessage">Lo que escribió el jugador.</param>
+    /// <returns>La acción a ejecutar.</returns>
+    internal static NpcActionKind CorrectChatAction(NpcActionKind action, string playerMessage)
+    {
+        if (action != NpcActionKind.Guide)
+        {
+            return action;
+        }
+
+        var lower = playerMessage.ToLowerInvariant();
+        var mentionsPlace = new[] { "lorencia", "devias", "noria" }.Any(place => lower.Contains(place));
+        return mentionsPlace ? NpcActionKind.Guide : NpcActionKind.Follow;
+    }
+
     /// <summary>Construye el system prompt para el LLM con contexto del jugador y el mundo.</summary>
     private string BuildSystemPrompt(Player sender)
     {
@@ -830,29 +865,37 @@ public abstract class BotProtagonist : BotPlayer
             "- Sin emojis, sin asteriscos, sin acciones entre paréntesis, sin poner tu nombre adelante.\n\n" +
             "SITUACIÓN AHORA:\n" +
             $"- Cómo estás: {this._moodSystem.GetPromptFragment()}\n" +
+            (this.IsAtSafezone() || sender.IsAtSafezone()
+                ? "- Están en zona segura: acá el juego no deja pelear. Si quieren pelear, tienen que salir del pueblo (decíselo).\n"
+                : "- Están fuera de la zona segura: se puede pelear.\n") +
             $"- Estás en {map}.\n" +
             $"- Te habla {sender.Name}, nivel {sender.Level}, clase {playerClass}.\n\n" +
-            "ACCIONES (además de hablar podés hacer UNA):\n" +
-            "- none: solo hablar.\n" +
-            "- follow: seguir a quien te habla.\n" +
-            "- guide: llevarlo a un lugar. En place poné lorencia, devias o noria.\n" +
-            "- fight: pelear con quien te habla (si te desafía o te falta el respeto en serio).\n" +
-            "- stop: dejar de hacer lo que estás haciendo.\n" +
+            "ACCIONES (además de hablar podés hacer UNA). Elegí según lo que te PIDE el jugador:\n" +
+            "- none: solo hablar. También para negarte a algo.\n" +
+            "- follow: ir hasta el jugador y seguirlo. Lo piden con: vení, acá, acercate, seguime, acompañame, vamos juntos, ayudame.\n" +
+            "- guide: llevar al jugador a OTRO mapa. SOLO si nombra un lugar (llevame a Devias, ¿cómo voy a Noria?). En place poné lorencia, devias o noria. Si no nombró un lugar, NUNCA uses guide.\n" +
+            "- fight: pelear con quien te habla. Lo piden con: peleá, te reto, duelo, vení que te mato, o un insulto en serio.\n" +
+            "- stop: SOLO si ahora estás siguiendo, guiando o peleando con alguien y te piden que pares (quedate, ya está, andate). Para negarte a algo NO uses stop: usá none.\n" +
+            "Sos orgulloso: si alguien te desafía a pelear en serio, aceptás con fight (salvo que estés agotado). Si alguien te pide algo, podés dejar lo que estás haciendo por tu cuenta.\n" +
             "Vos decidís según tu personalidad: si no tenés ganas, decí que no y usá none. " +
             "Si decís que vas a hacer algo, poné esa acción; no prometas y pongas none.\n" +
             $"AHORA ESTÁS: {this.DescribeCurrentAction()}.\n\n" +
-            "RESPONDÉ SIEMPRE con este JSON y nada más: {{\"say\": \"lo que decís\", \"action\": \"none\", \"place\": \"\"}}\n\n" +
+            "RESPONDÉ SIEMPRE con este JSON y nada más: {\"say\": \"lo que decís\", \"action\": \"none\", \"place\": \"\"}\n\n" +
             "EJEMPLOS:\n" +
             "Jugador: hola\n" +
-            "{{\"say\": \"Buenas. ¿Qué andás buscando por mi ciudad?\", \"action\": \"none\", \"place\": \"\"}}\n" +
+            "{\"say\": \"Buenas. ¿Qué andás buscando por mi ciudad?\", \"action\": \"none\", \"place\": \"\"}\n" +
+            "Jugador: vení\n" +
+            "{\"say\": \"Ya voy, no me apures.\", \"action\": \"follow\", \"place\": \"\"}\n" +
+            "Jugador: acercate que te quiero mostrar algo\n" +
+            "{\"say\": \"A ver qué tenés. Más te vale que valga la pena.\", \"action\": \"follow\", \"place\": \"\"}\n" +
+            "Jugador: acompañame a cazar\n" +
+            "{\"say\": \"Hoy no tengo ganas de cuidar novatos.\", \"action\": \"none\", \"place\": \"\"}\n" +
             "Jugador: me llevás a devias?\n" +
-            "{{\"say\": \"Dale, seguime y no te quedes atrás.\", \"action\": \"guide\", \"place\": \"devias\"}}\n" +
-            "Jugador: acompañame un rato\n" +
-            "{{\"say\": \"Un rato. No me hagas perder el tiempo.\", \"action\": \"follow\", \"place\": \"\"}}\n" +
-            "Jugador: sos un manco\n" +
-            "{{\"say\": \"Vení que te enseño quién es el manco.\", \"action\": \"fight\", \"place\": \"\"}}\n" +
+            "{\"say\": \"Dale, seguime y no te quedes atrás.\", \"action\": \"guide\", \"place\": \"devias\"}\n" +
+            "Jugador: sos un manco, peleá\n" +
+            "{\"say\": \"Vení que te enseño quién es el manco.\", \"action\": \"fight\", \"place\": \"\"}\n" +
             "Jugador: ya está, quedate acá\n" +
-            "{{\"say\": \"Como quieras. Me vuelvo a lo mío.\", \"action\": \"stop\", \"place\": \"\"}}";
+            "{\"say\": \"Como quieras. Me vuelvo a lo mío.\", \"action\": \"stop\", \"place\": \"\"}";
     }
 
     /// <summary>Go north to the gate at (130, 178).</summary>
