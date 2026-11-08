@@ -168,8 +168,10 @@ public abstract class BotProtagonist : BotPlayer
         {
             if (this.ActivitiesEnabled && !this.World.IsHunting)
             {
+                // Primero las reacciones a eventos (lo atacan, alguien muere, alguien llega): si una pide el LLM,
+                // el planificador espera al próximo tick. Un solo pedido al LLM por bot a la vez.
+                this.ThinkAsyncLLM(now);
                 this.UpdateActivity(now);
-                this.ThinkAsyncLLM(now); // reacciones a eventos: lo atacan, alguien muere, alguien llega
             }
             else
             {
