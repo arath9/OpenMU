@@ -67,25 +67,7 @@ public sealed class BotProtagonist_elBichiCome : BotProtagonist
         }
 
         this._companion = null;
-        
-        // Patrullar waypoints definidos en Settings.Patrol
-        if (this.Settings.Patrol is { } patrol && patrol.Length > 0)
-        {
-            var waypointIndex = this._patrolIndex % patrol.Length;
-            var waypoint = patrol[waypointIndex];
-
-            if (this.CurrentMap is { } currentMap && currentMap.Definition.Number == waypoint.Map)
-            {
-                var distanceToWaypoint = System.Math.Sqrt(System.Math.Pow(this.Position.X - waypoint.X, 2) + System.Math.Pow(this.Position.Y - waypoint.Y, 2));
-                if (distanceToWaypoint < 5)
-                {
-                    this._patrolIndex++;
-                }
-
-                this.Destination = new(waypoint.Map, waypoint.X, waypoint.Y);
-            }
-        }
-        
+        this.Patrol(now);
         await this.SayAsync("Una moneda, un Ale... entrenar a esos dos me dejo seco.").ConfigureAwait(false);
     }
 }

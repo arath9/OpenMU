@@ -4,108 +4,86 @@
 
 namespace MUnique.OpenMU.GameLogic.Bots;
 
-using System;
-
 /// <summary>
-/// Estados de ánimo que un protagonista puede experimentar (afectan su comportamiento).
-/// Referencia: Plan Mandolion Vida Propia 2026-11-07, Diseño sección "3. Estado emocional".
-/// </summary>
-public enum NpcMoodKind
-{
-    /// <summary>Sin estado especial (normal/calmo).</summary>
-    Normal = 0,
-    
-    /// <summary>Agresivo - busca pelear o confrontar jugadores.</summary>
-    Aggressive = 1,
-    
-    /// <summary>Miedo - huye de jugadores cercanos.</summary>
-    Fearful = 2,
-    
-    /// <summary>Curioso - se acerca a jugadores y pregunta cosas.</summary>
-    Curious = 3,
-    
-    /// <summary>Triste - busca descansar o recordar algo malo.</summary>
-    Sad = 4,
-}
-
-/// <summary>
-/// Sistema de estado emocional y energético que afecta el comportamiento del NPC.
-/// Referencia: Plan Mandolion Vida Propia 2026-11-07, Diseño sección "3. Estado emocional".
+/// Humor y energía de un protagonista. Cambian por lo que le pasa (lo atacan, muere, mata, charla)
+/// y por el paso del tiempo según su actividad (descansar recupera, cazar cansa).
 /// </summary>
 public sealed class NpcMoodSystem
 {
-    private DateTime _lastUpdate = DateTime.UtcNow;
-    
-    /// <summary>Nivel de energía (0-100). 0=agotado, 50=normal, 100=plenamente energético.</summary>
-    public int Energy { get; private set; } = 70; // Inicialmente 70
-    
-    /// <summary>Nivel de ánimo (-100 a 100). -100=muy deprimido, 0=neutral, 100=eufórico.</summary>
-    public int MoodScore { get; private set; } = 0; // Inicialmente neutral
-    
-    /// <summary>Estado de ánimo actual (calculado a partir de MoodScore).</summary>
-    public NpcMoodKind CurrentMood => MoodScore switch
+    private DateTimeOffset _lastTick;
+    private double _mood;
+    private double _energy = 70;
+
+    /// <summary>Initializes a new instance of the <see cref="NpcMoodSystem"/> class.</summary>
+    /// <param name="start">Momento inicial (para tests); por defecto ahora.</param>
+    public NpcMoodSystem(DateTimeOffset? start = null)
     {
-        >= 50 => NpcMoodKind.Aggressive,
-        <= -50 => NpcMoodKind.Sad,
-        >= 25 => NpcMoodKind.Curious,
-        <= -25 => NpcMoodKind.Fearful,
-        _ => NpcMoodKind.Normal
+        this._lastTick = start ?? DateTimeOffset.UtcNow;
+    }
+
+    /// <summary>Gets el humor: -100 furioso ... +100 contento.</summary>
+    public int MoodScore => (int)Math.Round(this._mood);
+
+    /// <summary>Gets la energía: 0 agotado ... 100 lleno de energía.</summary>
+    public int Energy => (int)Math.Round(this._energy);
+
+    /// <summary>Gets el humor en palabras.</summary>
+    public string MoodText => this._mood switch
+    {
+        < -50 => "furioso",
+        < -15 => "molesto",
+        < 15 => "tranquilo",
+        < 50 => "de buen humor",
+        _ => "contento",
     };
 
-    /// <summary>Registra un evento que afecta el estado emocional/energético.</summary>
-    public void RegisterEvent(MUnique.OpenMU.GameLogic.Bots.NpcActionKind action, string? targetName)
+    /// <summary>Gets la energía en palabras.</summary>
+    public string EnergyText => this._energy switch
     {
-        var now = DateTime.UtcNow;
-        var deltaSeconds = (now - _lastUpdate).TotalSeconds;
-        
-        // Recuperación pasiva de energía: +1 cada 30 segundos
-        Energy = Math.Min(100, Energy + (int)(deltaSeconds / 30.0));
-        
-        // Eventos que afectan estado emocional
-        switch (action)
+        < 15 => "agotado",
+        < 40 => "cansado",
+        < 75 => "con energía",
+        _ => "lleno de energía",
+    };
+
+    /// <summary>Aplica un cambio de humor y energía.</summary>
+    /// <param name="moodDelta">Cambio de humor.</param>
+    /// <param name="energyDelta">Cambio de energía.</param>
+    /// <returns>True si algún valor cruzó un múltiplo de 10 (para loguear sin spam).</returns>
+    public bool Apply(double moodDelta, double energyDelta)
+    {
+        var before = (this.MoodScore / 10, this.Energy / 10);
+        this._mood = Math.Clamp(this._mood + moodDelta, -100, 100);
+        this._energy = Math.Clamp(this._energy + energyDelta, 0, 100);
+        return before != (this.MoodScore / 10, this.Energy / 10);
+    }
+
+    /// <summary>Paso del tiempo según la actividad. Se llama en cada tick.</summary>
+    /// <param name="now">Ahora.</param>
+    /// <param name="activity">Actividad actual.</param>
+    /// <returns>True si algún valor cruzó un múltiplo de 10.</returns>
+    public bool Tick(DateTimeOffset now, NpcActivityKind activity)
+    {
+        var minutes = (now - this._lastTick).TotalMinutes;
+        this._lastTick = now;
+        if (minutes <= 0 || minutes > 10)
         {
-            case MUnique.OpenMU.GameLogic.Bots.NpcActionKind.Fight:
-                MoodScore = Math.Min(100, MoodScore + 20);
-                Energy = Math.Max(0, Energy - 15); // Pelear gasta energía
-                break;
-                
-            case MUnique.OpenMU.GameLogic.Bots.NpcActionKind.Stop:
-                MoodScore = Math.Clamp(MoodScore + 5, -100, 100); // Parar mejora ánimo ligeramente
-                Energy = Math.Min(100, Energy + 10); // Descansar recupera un poco
-                break;
-                
-            case MUnique.OpenMU.GameLogic.Bots.NpcActionKind.None:
-            default:
-                // Sin efecto significativo
-                break;
+            return false;
         }
-        
-        _lastUpdate = now;
-    }
 
-    /// <summary>
-    /// Genera un fragmento de texto para el prompt del LLM que describe el estado actual.
-    /// Referencia: Plan Mandolion Vida Propia 2026-11-07, Diseño sección "3. Estado emocional".
-    /// </summary>
-    public string GetPromptFragment(string botName)
-    {
-        var energyText = Energy switch
+        var energyPerMinute = activity switch
         {
-            < 20 => "agotado (muy poca energía)",
-            < 50 => "cansado",
-            < 80 => "con energía normal",
-            _ => "plenamente energético"
+            NpcActivityKind.Rest => 3.0,
+            NpcActivityKind.Hunt => -1.0,
+            _ => -0.2,
         };
 
-        var moodText = CurrentMood switch
-        {
-            NpcMoodKind.Aggressive => "en un estado de ánimo agresivo y confrontacional",
-            NpcMoodKind.Fearful => "miedo e inseguridad",
-            NpcMoodKind.Curious => "curioso y abierto a hablar",
-            NpcMoodKind.Sad => "triste y melancólico",
-            _ => "en un estado de ánimo neutro"
-        };
-
-        return $"[{botName}] está {energyText} y siente {moodText}.";
+        // El humor vuelve hacia neutro de a 1 punto por minuto.
+        var moodBack = -Math.Sign(this._mood) * Math.Min(Math.Abs(this._mood), minutes);
+        return this.Apply(moodBack, energyPerMinute * minutes);
     }
+
+    /// <summary>Texto para los prompts del LLM.</summary>
+    /// <returns>Una frase con humor y energía.</returns>
+    public string GetPromptFragment() => $"Estás {this.MoodText} (humor {this.MoodScore}) y {this.EnergyText} (energía {this.Energy}/100).";
 }

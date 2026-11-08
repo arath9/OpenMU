@@ -205,6 +205,16 @@ public sealed class ProtagonistFeaturePlugIn : IFeaturePlugIn, IPeriodicTaskPlug
     public ValueTask AttackableGotKilledAsync(IAttackable killed, IAttacker? killer)
 
     {
+        // Muerte del propio protagonista: baja humor y energía y se va a descansar.
+        if (killed is BotProtagonist deadProtagonist && deadProtagonist.Settings.Enabled)
+        {
+            deadProtagonist.PendingBotActions.Enqueue(() =>
+            {
+                deadProtagonist.OnProtagonistDied(killer as Player);
+                return ValueTask.CompletedTask;
+            });
+        }
+
         if (killed is Player human && human is not OfflinePlayer && human.CurrentMiniGame is null
             && human.CurrentMap is { } deathMap && human.GameContext is GameContext context
             && this._states.TryGetValue(context, out var state) && state.World is { } world && world.Configuration.Enabled)
@@ -233,6 +243,12 @@ public sealed class ProtagonistFeaturePlugIn : IFeaturePlugIn, IPeriodicTaskPlug
             && protagonist.Settings.Enabled && protagonist.CurrentMiniGame is null)
 
         {
+
+            protagonist.PendingBotActions.Enqueue(() =>
+            {
+                protagonist.OnKilledHuman(victim);
+                return ValueTask.CompletedTask;
+            });
 
             if (protagonist is BotProtagonist_elmandolion)
 

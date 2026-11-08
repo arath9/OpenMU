@@ -150,6 +150,10 @@ namespace MUnique.OpenMU.GameLogic.Bots
         public Task<NpcIntent?> ThinkIntentAsync(string botName, string systemPrompt, IReadOnlyList<string> targets)
             => this._llmClient.ChatIntentAsync(systemPrompt, new[] { new ChatTurn("user", "Decidí si reaccionar a lo que acaba de pasar.") }, botName, targets);
 
+        /// <summary>Pide al modelo un plan de actividad (sin historial de chat).</summary>
+        public Task<NpcPlan?> PlanActivityAsync(string botName, string systemPrompt, IReadOnlyList<string> targets)
+            => this._llmClient.PlanActivityAsync(systemPrompt, botName, targets);
+
         /// <summary>
         /// Procesa un mensaje del jugador en modo híbrido.
         /// Primero intenta YarnSpinner, si hay opciones muestra botones, luego permite texto libre.

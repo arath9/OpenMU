@@ -473,6 +473,102 @@ public class LocalLLMClient : IDisposable
     public Task<NpcIntent?> ChatIntentAsync(string systemPrompt, IReadOnlyList<ChatTurn> turns, string botName, CancellationToken cancellationToken = default)
         => this.ChatIntentAsync(systemPrompt, turns, botName, null, cancellationToken);
 
+    /// <summary>Le pregunta al modelo qué actividad hacer ahora (JSON: activity, map, target, say, reason). Null si falla.</summary>
+    public async Task<NpcPlan?> PlanActivityAsync(string systemPrompt, string botName, IReadOnlyList<string> targets, CancellationToken cancellationToken = default)
+    {
+        var schema = new
+        {
+            type = "json_schema",
+            json_schema = new
+            {
+                name = "npc_plan",
+                strict = true,
+                schema = new
+                {
+                    type = "object",
+                    properties = new Dictionary<string, object>
+                    {
+                        ["activity"] = new { type = "string", @enum = new[] { "GuardGate", "Patrol", "Hunt", "Rest", "SeekPlayer", "ChallengeRival" } },
+                        ["map"] = new { type = "string", @enum = new[] { "", "lorencia", "devias", "noria" } },
+                        ["target"] = new { type = "string", @enum = targets.Append(string.Empty).Distinct().ToArray() },
+                        ["say"] = new { type = "string" },
+                        ["reason"] = new { type = "string" },
+                    },
+                    required = new[] { "activity", "map", "target", "say", "reason" },
+                    additionalProperties = false,
+                },
+            },
+        };
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var request = new LLMRequest
+                {
+                    Model = _modelName,
+                    Messages = new[]
+                    {
+                        new ChatMessageDto { Role = "system", Content = systemPrompt },
+                        new ChatMessageDto { Role = "user", Content = "¿Qué hacés ahora?" },
+                    },
+                    MaxTokens = 200,
+                    Temperature = _config.Temperature,
+                    Stream = false,
+                    ChatTemplateKwargs = new Dictionary<string, object> { ["enable_thinking"] = false },
+                    ResponseFormat = schema,
+                };
+
+                var json = JsonSerializer.Serialize(request, JsonOptions);
+                using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync($"{_baseUrl}/v1/chat/completions", content, cancellationToken).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var lower = body.ToLowerInvariant();
+                    if (attempt == 0 && (lower.Contains("unloaded") || lower.Contains("loading")))
+                    {
+                        _logger.LogWarning("Reintento LLM (plan) para {Bot}: el modelo no está cargado", botName);
+                        await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds), cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    _logger.LogWarning("LM Studio HTTP {Status} (plan): {Body}", response.StatusCode, body);
+                    return null;
+                }
+
+                var raw = JsonSerializer.Deserialize<LLMResponseDto>(body, JsonOptions)?.Choices.FirstOrDefault()?.Message.Content;
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    return null;
+                }
+
+                raw = System.Text.RegularExpressions.Regex.Replace(raw, @"<think>[\s\S]*?</think>", string.Empty).Trim();
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+                string Read(string name) => root.TryGetProperty(name, out var value) ? value.GetString() ?? string.Empty : string.Empty;
+                if (!Enum.TryParse<NpcActivityKind>(Read("activity"), true, out var activity))
+                {
+                    return null;
+                }
+
+                return new NpcPlan(activity, Read("map"), Read("target"), ChatText.Clean(Read("say"), botName), Read("reason"));
+            }
+            catch (TaskCanceledException) when (attempt == 0 && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("Reintento LLM (plan) para {Bot}: timeout", botName);
+                await Task.Delay(TimeSpan.FromSeconds(_config.RetryDelaySeconds), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Plan LLM fallo para {Bot}", botName);
+                return null;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>Requests an autonomous intent with a target restricted to the supplied nearby humans.</summary>
     /// <param name="systemPrompt">The captured world situation.</param>
     /// <param name="turns">The request turns.</param>

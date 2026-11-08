@@ -84,3 +84,6 @@ public static class ActivityDurationCalculator
         _ => 5,                                                      // default: 5 min
     };
 }
+
+/// <summary>Lo que decidió el planificador: actividad, mapa, objetivo, frase opcional y motivo.</summary>
+public sealed record NpcPlan(NpcActivityKind Activity, string Map, string Target, string Say, string Reason);
