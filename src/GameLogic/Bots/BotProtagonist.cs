@@ -37,6 +37,19 @@ public abstract class BotProtagonist : BotPlayer
 
     // Percepción del mundo (eventos cercanos)
     protected readonly NpcPerception _perception = new();
+    
+    /// <summary>Estado interno: humor (-100..+100, furioso...contento).</summary>
+    private int _mood;
+    
+    /// <summary>Energía (0-100). Sube con descanso, baja con actividad.</summary>
+    private byte _energy;
+    
+    /// <summary>Actividad actual elegida por el LLM o al azar.</summary>
+    private NpcActivityKind _currentActivity;
+    
+    /// <summary>Hora en que termina la actividad actual.</summary>
+    private DateTimeOffset _activityUntil;
+    
     private readonly HashSet<WorldEvent> _consideredWorldEvents = new();
     private readonly Dictionary<Player, DateTimeOffset> _lastAutonomousGreeting = new();
     private DateTimeOffset _nextAutonomousThink;
@@ -100,6 +113,17 @@ public abstract class BotProtagonist : BotPlayer
         foreach (var evt in this._perception.UpdateNearbyHumans(nearbyHumans))
         {
             this.Logger.LogDebug("Percepcion {Bot}: {Kind} {Who}", this.Name, evt.Kind, evt.Who?.Name);
+        }
+
+        // PASO 2: Ejecutor de actividad autónoma (elegir random para probar)
+        if (now >= this._activityUntil && Random.Shared.NextDouble() < 0.3)
+        {
+            var activity = (NpcActivityKind)Random.Shared.Next(1, 7); // GuardGate..ChallengeRival
+            
+            this.Logger.LogInformation("Mandolion elige actividad random: {Activity}", activity);
+            
+            this._currentActivity = activity;
+            this._activityUntil = now.AddMinutes(ActivityDurationCalculator.CalculateMinutes(activity));
         }
 
         var aggressor = this.RecentAggressor;
