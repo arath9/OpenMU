@@ -81,6 +81,9 @@ public abstract class BotProtagonist : BotPlayer
     // Intentos de movimiento durante Hunt sin monstruos
     private int _noMonsterMoveAttempts;
 
+    // Próximo chequeo de "sin monstruos" durante Hunt
+    private DateTimeOffset _huntCheckAt;
+
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
 
@@ -207,58 +210,7 @@ public abstract class BotProtagonist : BotPlayer
             this.Destination = new(map.Definition.Number, target.Position.X, target.Position.Y);
         }
 
-        // Durante Hunt: HuntingOrigin debe mantenerse en el punto de caza original, no sobrescribirse con Position.
-        if (this._currentActivity != NpcActivityKind.Hunt || !this._huntArrived)
-        {
-            this.HuntingOrigin = this.Position;
-        }
-
-        // Monitor para Hunt: si en 60s no atacó nada, moverse a otro punto cercano.
-        if (this._currentActivity == NpcActivityKind.Hunt && this._huntArrived && this.CurrentMap is { } huntMap)
-        {
-            var sinceLastAttack = now - this.LastAttackUtc;
-            if (sinceLastAttack >= TimeSpan.FromSeconds(60))
-            {
-                // Generar coordenadas aleatorias a 10-15 casillas de distancia
-                var offset = Random.Shared.Next(-15, -9) == -Random.Shared.Next(9, 16) 
-                    ? Random.Shared.Next(-15, -10) 
-                    : Random.Shared.Next(10, 16);
-                
-                // Intentar varias posiciones hasta encontrar una caminable
-                var attempts = 0;
-                int newDestX = this.Position.X;
-                int newDestY = this.Position.Y;
-
-                do
-                {
-                    var dx = Random.Shared.Next(-15, 16); // -15 a +15
-                    var dy = Random.Shared.Next(-15, 16);
-                    newDestX = Math.Max(0, Math.Min(255, this.Position.X + dx));
-                    newDestY = Math.Max(0, Math.Min(255, this.Position.Y + dy));
-                    attempts++;
-
-                    // Verificar que sea caminable (usar Terrain.WalkMap[x, y])
-                } while (!huntMap.Terrain.WalkMap[newDestX, newDestY] && attempts < 10);
-
-                var moveAttempts = this._noMonsterMoveAttempts + 1;
-                this._noMonsterMoveAttempts = moveAttempts;
-
-                this.Logger.LogInformation("Actividad {Bot}: sin monstruos, se mueve a ({X},{Y}) (intento {Count})", 
-                    this.Name, newDestX, newDestY, moveAttempts);
-
-                // Si pasa 3 veces seguidas, terminar la actividad
-                if (moveAttempts >= 3)
-                {
-                    this.Logger.LogInformation("Actividad {Bot}: sin monstruos por 3 intentos, termina Hunt", this.Name);
-                    this.EndActivity();
-                    return;
-                }
-
-                // Moverse al nuevo punto (convertir a byte para ProtagonistWaypoint)
-                this.Destination = new ProtagonistWaypoint(huntMap.Definition.Number, 
-                    checked((byte)newDestX), checked((byte)newDestY));
-            }
-        }
+        this.HuntingOrigin = this.Position;
     }
 
     /// <summary>Handles a human message on the existing serialized bot action queue.</summary>
@@ -1065,6 +1017,8 @@ public abstract class BotProtagonist : BotPlayer
         this._activityPlace = place;
         this._activityTarget = target;
         this._huntArrived = false;
+        this._noMonsterMoveAttempts = 0;
+        this._huntCheckAt = default;
         this._activityUntil = DateTimeOffset.UtcNow.AddMinutes(minutes);
         this.Logger.LogInformation(
             "Actividad {Bot}: {Kind} mapa={Map} objetivo={Target} por {Minutes} min. Motivo: {Reason}",
@@ -1144,15 +1098,45 @@ public abstract class BotProtagonist : BotPlayer
                     if (this.CurrentMap?.Definition.Number == spot.Map && this.IsInRange(spot.X, spot.Y, 6))
                     {
                         this._huntArrived = true; // desde acá CanFarm = true y el MuHelper ataca monstruos
+                        this._huntCheckAt = now.AddSeconds(60);
+                        this._noMonsterMoveAttempts = 0;
                         this.Logger.LogInformation("Actividad {Bot}: llegó a cazar en {Place}", this.Name, NpcPlaces.NameOf(spot));
                     }
-                }
-                else if (this.CurrentMap is { } huntMap)
-                {
-                    // Cazando: que el navegador no lo arrastre a otro lado.
-                    this.Destination = new ProtagonistWaypoint(huntMap.Definition.Number, this.Position.X, this.Position.Y);
+
+                    break;
                 }
 
+                if (this.CurrentMap is not { } huntMap)
+                {
+                    break;
+                }
+
+                if (DateTimeOffset.UtcNow - this.LastAttackUtc < TimeSpan.FromSeconds(60))
+                {
+                    // Está peleando: todo bien, se queda donde está y vuelve a chequear en 60 s.
+                    this._noMonsterMoveAttempts = 0;
+                    this._huntCheckAt = now.AddSeconds(60);
+                    this.Destination = new ProtagonistWaypoint(huntMap.Definition.Number, this.Position.X, this.Position.Y);
+                    break;
+                }
+
+                if (now < this._huntCheckAt)
+                {
+                    break; // todavía no pasaron 60 s desde el último chequeo; sigue yendo a donde iba
+                }
+
+                this._noMonsterMoveAttempts++;
+                if (this._noMonsterMoveAttempts > 3)
+                {
+                    this.Logger.LogInformation("Actividad {Bot}: sin monstruos en {Place}, termina la caza", this.Name, NpcPlaces.NameOf(spot));
+                    this.EndActivity();
+                    break;
+                }
+
+                var next = PickWalkableNear(huntMap, this.Position.X, this.Position.Y, 15);
+                this.Destination = new ProtagonistWaypoint(huntMap.Definition.Number, next.X, next.Y);
+                this._huntCheckAt = now.AddSeconds(60);
+                this.Logger.LogInformation("Actividad {Bot}: sin monstruos, se mueve a ({X},{Y}) (intento {Count}/3)", this.Name, next.X, next.Y, this._noMonsterMoveAttempts);
                 break;
             }
 
@@ -1184,6 +1168,27 @@ public abstract class BotProtagonist : BotPlayer
                 break;
             }
         }
+    }
+
+    /// <summary>Elige una celda caminable a 8..range casillas de (x, y). Si no encuentra, devuelve (x, y).</summary>
+    private static (byte X, byte Y) PickWalkableNear(GameMap map, byte x, byte y, int range)
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            var nx = x + (Random.Shared.Next(8, range + 1) * (Random.Shared.Next(2) == 0 ? -1 : 1));
+            var ny = y + (Random.Shared.Next(8, range + 1) * (Random.Shared.Next(2) == 0 ? -1 : 1));
+            if (nx is < 0 or > 255 || ny is < 0 or > 255)
+            {
+                continue;
+            }
+
+            if (map.Terrain.WalkMap[nx, ny])
+            {
+                return ((byte)nx, (byte)ny);
+            }
+        }
+
+        return (x, y);
     }
 
     private Player? FindSeekTarget(string? name)
