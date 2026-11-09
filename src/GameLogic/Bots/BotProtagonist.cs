@@ -75,6 +75,9 @@ public abstract class BotProtagonist : BotPlayer
     private Player? _lastPerceivedAggressor;
     private int _autonomyVersion;
 
+    // Contador para detectar si IsWalking está "trabado" (BotNavigator)
+    internal int _walkingStuckCounter;
+
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
 

@@ -611,6 +611,8 @@ internal sealed class BotNavigator : AsyncDisposable
                 this._lastWarpUtc = DateTime.UtcNow;
                 await WarpAction.WarpToAsync(protagonist, warp).ConfigureAwait(false);
                 await protagonist.ClientReadyAfterMapChangeAsync().ConfigureAwait(false);
+                protagonist.Logger.LogInformation("Navegacion {Bot}: warp a mapa {Map} (destino={DestMap},{DestX},{DestY})", 
+                    protagonist.Name, destination.Map, destination.X, destination.Y);
             }
 
             return;
@@ -619,7 +621,27 @@ internal sealed class BotNavigator : AsyncDisposable
         var point = new Point(destination.X, destination.Y);
         if (point.EuclideanDistanceTo(protagonist.Position) > 2 && (protagonist.ScriptedTarget is null || point.EuclideanDistanceTo(protagonist.Position) > 3))
         {
-            await this.TravelTowardAsync(map, point, token).ConfigureAwait(false);
+            var walked = await this.TravelTowardAsync(map, point, token).ConfigureAwait(false);
+            if (!walked)
+            {
+                protagonist.Logger.LogWarning("Navegacion {Bot}: sin camino de ({X},{Y}) a ({DX},{DY}) en mapa {Map}", 
+                    protagonist.Name, protagonist.Position.X, protagonist.Position.Y, destination.X, destination.Y, map.Definition.Name);
+            }
+        }
+
+        // Contar cuántas veces seguidas el bot está "trabado caminando" (IsWalking=true)
+        if (!protagonist.IsWalking)
+        {
+            protagonist._walkingStuckCounter = 0;
+        }
+        else
+        {
+            protagonist._walkingStuckCounter++;
+            if (protagonist._walkingStuckCounter >= 10)
+            {
+                protagonist.Logger.LogWarning("Navegacion {Bot}: trabado caminando ({Count} veces)", 
+                    protagonist.Name, protagonist._walkingStuckCounter);
+            }
         }
     }
 
