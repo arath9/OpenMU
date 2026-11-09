@@ -78,6 +78,9 @@ public abstract class BotProtagonist : BotPlayer
     // Contador para detectar si IsWalking está "trabado" (BotNavigator)
     internal int _walkingStuckCounter;
 
+    // Intentos de movimiento durante Hunt sin monstruos
+    private int _noMonsterMoveAttempts;
+
     /// <summary>Gets the bot's identity/name.</summary>
     public string Identity { get; }
 
@@ -204,7 +207,58 @@ public abstract class BotProtagonist : BotPlayer
             this.Destination = new(map.Definition.Number, target.Position.X, target.Position.Y);
         }
 
-        this.HuntingOrigin = this.Position;
+        // Durante Hunt: HuntingOrigin debe mantenerse en el punto de caza original, no sobrescribirse con Position.
+        if (this._currentActivity != NpcActivityKind.Hunt || !this._huntArrived)
+        {
+            this.HuntingOrigin = this.Position;
+        }
+
+        // Monitor para Hunt: si en 60s no atacó nada, moverse a otro punto cercano.
+        if (this._currentActivity == NpcActivityKind.Hunt && this._huntArrived && this.CurrentMap is { } huntMap)
+        {
+            var sinceLastAttack = now - this.LastAttackUtc;
+            if (sinceLastAttack >= TimeSpan.FromSeconds(60))
+            {
+                // Generar coordenadas aleatorias a 10-15 casillas de distancia
+                var offset = Random.Shared.Next(-15, -9) == -Random.Shared.Next(9, 16) 
+                    ? Random.Shared.Next(-15, -10) 
+                    : Random.Shared.Next(10, 16);
+                
+                // Intentar varias posiciones hasta encontrar una caminable
+                var attempts = 0;
+                int newDestX = this.Position.X;
+                int newDestY = this.Position.Y;
+
+                do
+                {
+                    var dx = Random.Shared.Next(-15, 16); // -15 a +15
+                    var dy = Random.Shared.Next(-15, 16);
+                    newDestX = Math.Max(0, Math.Min(255, this.Position.X + dx));
+                    newDestY = Math.Max(0, Math.Min(255, this.Position.Y + dy));
+                    attempts++;
+
+                    // Verificar que sea caminable (usar Terrain.WalkMap[x, y])
+                } while (!huntMap.Terrain.WalkMap[newDestX, newDestY] && attempts < 10);
+
+                var moveAttempts = this._noMonsterMoveAttempts + 1;
+                this._noMonsterMoveAttempts = moveAttempts;
+
+                this.Logger.LogInformation("Actividad {Bot}: sin monstruos, se mueve a ({X},{Y}) (intento {Count})", 
+                    this.Name, newDestX, newDestY, moveAttempts);
+
+                // Si pasa 3 veces seguidas, terminar la actividad
+                if (moveAttempts >= 3)
+                {
+                    this.Logger.LogInformation("Actividad {Bot}: sin monstruos por 3 intentos, termina Hunt", this.Name);
+                    this.EndActivity();
+                    return;
+                }
+
+                // Moverse al nuevo punto (convertir a byte para ProtagonistWaypoint)
+                this.Destination = new ProtagonistWaypoint(huntMap.Definition.Number, 
+                    checked((byte)newDestX), checked((byte)newDestY));
+            }
+        }
     }
 
     /// <summary>Handles a human message on the existing serialized bot action queue.</summary>
